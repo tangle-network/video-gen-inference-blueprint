@@ -6,6 +6,7 @@
 //!
 //! Both modes use an async job model: submit returns a job_id, poll for status.
 
+use base64::Engine as _;
 use blueprint_sdk::std::sync::Arc;
 use blueprint_sdk::std::time::Duration;
 
@@ -94,7 +95,7 @@ pub struct InterpolateRequest {
 /// Serde helper for base64-encoded byte fields.
 mod base64_bytes {
     use serde::{Deserialize, Deserializer, Serializer};
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use base64::{Engine, engine::general_purpose::STANDARD};
 
     pub fn serialize<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
         s.serialize_str(&STANDARD.encode(bytes))
