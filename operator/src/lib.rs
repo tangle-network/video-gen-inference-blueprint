@@ -72,6 +72,57 @@ pub fn init_for_testing(config: Arc<OperatorConfig>) {
     let _ = VIDEO_BACKEND.set(backend);
 }
 
+/// Shared state for direct testing (raw HTTP, no VideoBackend).
+static DIRECT_ENDPOINT: std::sync::OnceLock<DirectEndpoint> = std::sync::OnceLock::new();
+
+struct DirectEndpoint {
+    url: String,
+    client: reqwest::Client,
+}
+
+/// Initialize a raw HTTP endpoint for direct testing (wiremock).
+pub fn init_direct_for_testing(base_url: &str) {
+    let _ = DIRECT_ENDPOINT.set(DirectEndpoint {
+        url: format!("{base_url}/v1/video/generate"),
+        client: reqwest::Client::new(),
+    });
+}
+
+/// Direct video generation submit -- bypasses VideoBackend, does a raw HTTP POST.
+/// Returns the job_id from the backend response.
+pub async fn submit_video_direct(
+    request: &VideoGenJobRequest,
+) -> Result<String, RunnerError> {
+    let endpoint = DIRECT_ENDPOINT.get().ok_or_else(|| {
+        RunnerError::Other("direct endpoint not registered".into())
+    })?;
+
+    let body = serde_json::json!({
+        "prompt": request.prompt,
+        "duration_secs": request.durationSecs,
+        "resolution": request.resolution,
+        "fps": request.fps,
+    });
+
+    let resp = endpoint
+        .client
+        .post(&endpoint.url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| RunnerError::Other(format!("video gen request failed: {e}").into()))?;
+
+    let result: serde_json::Value = resp.json().await
+        .map_err(|e| RunnerError::Other(format!("video gen response parse failed: {e}").into()))?;
+
+    let job_id = result["job_id"]
+        .as_str()
+        .ok_or_else(|| RunnerError::Other("missing job_id in response".into()))?
+        .to_string();
+
+    Ok(job_id)
+}
+
 // --- Router ---
 
 pub fn router() -> Router {
