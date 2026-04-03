@@ -1,0 +1,56 @@
+[package]
+name = "video-gen-inference"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "video_gen_inference"
+path = "src/lib.rs"
+
+[[bin]]
+name = "video-gen-operator"
+path = "src/main.rs"
+
+[dependencies]
+blueprint-sdk = { workspace = true, features = ["tee"] }
+alloy = { workspace = true }
+alloy-sol-types = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+reqwest = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+k256 = { workspace = true }
+
+# Web framework
+axum = { version = "0.7", features = ["json", "macros"] }
+tower-http = { version = "0.5", features = ["cors", "limit", "trace", "timeout"] }
+
+# Config
+config = "0.14"
+dotenvy = "0.15"
+
+# Metrics
+prometheus = { workspace = true }
+
+# Streaming
+futures-util = { workspace = true }
+tokio-stream = { workspace = true }
+
+# Misc
+bytes = "1"
+uuid = { version = "1", features = ["v4"] }
+dashmap = "6"
+base64 = "0.22"
+
+[dev-dependencies]
+blueprint-sdk = { git = "https://github.com/tangle-network/blueprint", branch = "main", features = ["testing", "tangle"] }
+blueprint-anvil-testing-utils = { git = "https://github.com/tangle-network/blueprint", branch = "main" }
+wiremock = "0.6"
+alloy-primitives = "1"
+alloy-sol-types = "1"
