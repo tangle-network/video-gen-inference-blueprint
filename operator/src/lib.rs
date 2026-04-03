@@ -5,8 +5,8 @@ pub mod video;
 
 pub mod server;
 
-use blueprint_std::sync::Arc;
-use blueprint_std::time::Duration;
+use blueprint_sdk::std::sync::Arc;
+use blueprint_sdk::std::time::Duration;
 
 use alloy_sol_types::sol;
 use blueprint_sdk::macros::debug_job;

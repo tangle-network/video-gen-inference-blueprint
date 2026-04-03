@@ -6,8 +6,8 @@
 //!
 //! Both modes use an async job model: submit returns a job_id, poll for status.
 
-use blueprint_std::sync::Arc;
-use blueprint_std::time::Duration;
+use blueprint_sdk::std::sync::Arc;
+use blueprint_sdk::std::time::Duration;
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
