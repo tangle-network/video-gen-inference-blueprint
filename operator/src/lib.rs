@@ -1,11 +1,19 @@
 pub mod config;
-pub mod health;
 pub mod qos;
+pub mod server;
 pub mod video;
 
-pub mod server;
+// Re-export shared infrastructure so downstream crates can `use video_gen_inference::*`.
+pub use tangle_inference_core::{
+    detect_gpus, parse_nvidia_smi_output, AppState, AppStateBuilder, BillingClient, CostModel,
+    CostParams, GpuInfo, NonceStore, PerSecondCostModel, RequestGuard, SpendAuthPayload,
+};
+pub use tangle_inference_core::server::{
+    error_response, extract_x402_spend_auth, payment_required, settle_billing, validate_spend_auth,
+};
+pub use tangle_inference_core::{billing, metrics};
 
-use blueprint_sdk::std::sync::Arc;
+use blueprint_sdk::std::sync::{Arc, OnceLock};
 use blueprint_sdk::std::time::Duration;
 
 use alloy_sol_types::sol;
@@ -16,10 +24,10 @@ use blueprint_sdk::runner::BackgroundService;
 use blueprint_sdk::tangle::extract::{TangleArg, TangleResult};
 use blueprint_sdk::tangle::layers::TangleLayer;
 use blueprint_sdk::Job;
-use tokio::sync::{oneshot, Semaphore};
+use tokio::sync::oneshot;
 
 use crate::config::OperatorConfig;
-use crate::video::{JobStatus, VideoBackend, VideoGenRequest};
+use crate::video::{JobStatus, VideoGenBackend, VideoGenRequest};
 
 // --- ABI types for on-chain job encoding ---
 
@@ -56,31 +64,29 @@ pub const VIDEO_GEN_JOB: u8 = 0;
 
 // --- Shared state for the on-chain job handler ---
 
-static VIDEO_BACKEND: std::sync::OnceLock<Arc<VideoBackend>> = std::sync::OnceLock::new();
+static VIDEO_BACKEND: OnceLock<Arc<VideoGenBackend>> = OnceLock::new();
 
-/// Called by VideoGenServer to register the backend for on-chain job handlers.
-#[allow(clippy::result_large_err)]
-fn register_video_backend(backend: Arc<VideoBackend>) -> Result<(), RunnerError> {
+fn register_video_backend(backend: Arc<VideoGenBackend>) {
     let _ = VIDEO_BACKEND.set(backend);
-    Ok(())
 }
 
-/// Initialize the video backend for testing.
+/// Initialize the video backend for testing (MultiHarness/BlueprintHarness).
 pub fn init_for_testing(config: Arc<OperatorConfig>) {
-    let backend =
-        Arc::new(VideoBackend::new(config).expect("failed to create video backend for testing"));
+    let backend = Arc::new(
+        VideoGenBackend::new(config).expect("failed to create video backend for testing"),
+    );
     let _ = VIDEO_BACKEND.set(backend);
 }
 
-/// Shared state for direct testing (raw HTTP, no VideoBackend).
-static DIRECT_ENDPOINT: std::sync::OnceLock<DirectEndpoint> = std::sync::OnceLock::new();
+// --- Direct endpoint for wiremock-based tests ---
+
+static DIRECT_ENDPOINT: OnceLock<DirectEndpoint> = OnceLock::new();
 
 struct DirectEndpoint {
     url: String,
     client: reqwest::Client,
 }
 
-/// Initialize a raw HTTP endpoint for direct testing (wiremock).
 pub fn init_direct_for_testing(base_url: &str) {
     let _ = DIRECT_ENDPOINT.set(DirectEndpoint {
         url: format!("{base_url}/v1/video/generate"),
@@ -88,14 +94,12 @@ pub fn init_direct_for_testing(base_url: &str) {
     });
 }
 
-/// Direct video generation submit -- bypasses VideoBackend, does a raw HTTP POST.
-/// Returns the job_id from the backend response.
-pub async fn submit_video_direct(
-    request: &VideoGenJobRequest,
-) -> Result<String, RunnerError> {
-    let endpoint = DIRECT_ENDPOINT.get().ok_or_else(|| {
-        RunnerError::Other("direct endpoint not registered".into())
-    })?;
+/// Direct video-generation submission — bypasses the VideoGenBackend and issues
+/// a raw HTTP POST. Used by the lifecycle integration test.
+pub async fn submit_video_direct(request: &VideoGenJobRequest) -> Result<String, RunnerError> {
+    let endpoint = DIRECT_ENDPOINT
+        .get()
+        .ok_or_else(|| RunnerError::Other("direct endpoint not registered".into()))?;
 
     let body = serde_json::json!({
         "prompt": request.prompt,
@@ -112,7 +116,9 @@ pub async fn submit_video_direct(
         .await
         .map_err(|e| RunnerError::Other(format!("video gen request failed: {e}").into()))?;
 
-    let result: serde_json::Value = resp.json().await
+    let result: serde_json::Value = resp
+        .json()
+        .await
         .map_err(|e| RunnerError::Other(format!("video gen response parse failed: {e}").into()))?;
 
     let job_id = result["job_id"]
@@ -138,15 +144,14 @@ pub fn router() -> Router {
 
 /// Handle a video generation job submitted on-chain.
 ///
-/// Video generation is async and takes 30s-5min. This submits the job to the
-/// backend, polls for completion, then returns the result. The Tangle job model
-/// (submit -> process -> result) maps naturally to this pattern.
+/// Video generation is async and takes 30s-5min. Submits the job to the
+/// backend, polls for completion, then returns the result.
 #[debug_job]
 pub async fn run_video_gen(
     TangleArg(request): TangleArg<VideoGenJobRequest>,
 ) -> Result<TangleResult<VideoGenJobResult>, RunnerError> {
     let backend = VIDEO_BACKEND.get().ok_or_else(|| {
-        RunnerError::Other("video backend not registered -- VideoGenServer not started".into())
+        RunnerError::Other("video backend not registered — VideoGenServer not started".into())
     })?;
 
     let fps = if request.fps == 0 {
@@ -162,13 +167,11 @@ pub async fn run_video_gen(
         fps,
     };
 
-    // Submit job
     let job_id = backend.submit_job(gen_req).await.map_err(|e| {
         tracing::error!(error = %e, "video gen job submission failed");
         RunnerError::Other(format!("video gen submission failed: {e}").into())
     })?;
 
-    // Poll for completion (video gen takes 30s-5min)
     let timeout = Duration::from_secs(backend.config.video.job_timeout_secs);
     let start = std::time::Instant::now();
 
@@ -206,7 +209,6 @@ pub async fn run_video_gen(
 // --- Background service: Video backend + HTTP server ---
 
 /// Runs the video generation backend and HTTP API as a [`BackgroundService`].
-/// Starts before the BlueprintRunner begins polling for on-chain jobs.
 #[derive(Clone)]
 pub struct VideoGenServer {
     pub config: Arc<OperatorConfig>,
@@ -219,7 +221,7 @@ impl BackgroundService for VideoGenServer {
 
         tokio::spawn(async move {
             // 1. Create video backend
-            let backend = match VideoBackend::new(config.clone()) {
+            let backend = match VideoGenBackend::new(config.clone()) {
                 Ok(b) => Arc::new(b),
                 Err(e) => {
                     tracing::error!(error = %e, "failed to create video backend");
@@ -241,34 +243,52 @@ impl BackgroundService for VideoGenServer {
             }
             tracing::info!("video backend is ready");
 
-            // Register for on-chain job handlers
-            if let Err(e) = register_video_backend(backend.clone()) {
-                tracing::error!(error = %e, "failed to register video backend");
-                let _ = tx.send(Err(e));
-                return;
-            }
+            register_video_backend(backend.clone());
 
-            // 2. Build semaphore (low concurrency for GPU-bound video gen)
-            let max_concurrent = config.server.max_concurrent_jobs;
-            let semaphore = Arc::new(if max_concurrent == 0 {
-                Semaphore::new(Semaphore::MAX_PERMITS)
-            } else {
-                Semaphore::new(max_concurrent)
-            });
+            // 2. Build the billing client
+            let billing_client = match BillingClient::new(&config.tangle, &config.billing) {
+                Ok(b) => Arc::new(b),
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to create billing client");
+                    let _ = tx.send(Err(RunnerError::Other(e.to_string().into())));
+                    return;
+                }
+            };
 
             // 3. Shutdown channel
             let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-            // 4. Start the HTTP server
-            let state = server::AppState {
-                config: config.clone(),
-                backend: backend.clone(),
-                semaphore,
+            // 4. Build AppState via the shared builder, attaching the video
+            //    backend as the generic backend extension.
+            let operator_address = billing_client.operator_address();
+            let nonce_store =
+                Arc::new(NonceStore::load(config.billing.nonce_store_path.clone()));
+            // The backend stores an Arc internally, so we clone the Arc and
+            // move the cloned VideoGenBackend into AppStateBuilder. Since
+            // VideoGenBackend holds only Arcs, cloning is cheap.
+            let backend_for_state = VideoGenBackend::clone_cheap(&backend);
+
+            let state = match AppStateBuilder::new()
+                .billing(billing_client)
+                .nonce_store(nonce_store)
+                .server_config(Arc::new(config.server.clone()))
+                .billing_config(Arc::new(config.billing.clone()))
+                .tangle_config(Arc::new(config.tangle.clone()))
+                .operator_address(operator_address)
+                .backend(backend_for_state)
+                .build()
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to build AppState");
+                    let _ = tx.send(Err(RunnerError::Other(e.to_string().into())));
+                    return;
+                }
             };
 
             match server::start(state, shutdown_rx).await {
                 Ok(_join_handle) => {
-                    tracing::info!("HTTP server started -- background service ready");
+                    tracing::info!("HTTP server started — background service ready");
                     let _ = tx.send(Ok(()));
                 }
                 Err(e) => {
@@ -278,7 +298,7 @@ impl BackgroundService for VideoGenServer {
                 }
             }
 
-            // 5. Watchdog: monitor backend health
+            // 5. Watchdog: monitor backend health + graceful shutdown.
             loop {
                 tokio::select! {
                     _ = tokio::time::sleep(Duration::from_secs(30)) => {}

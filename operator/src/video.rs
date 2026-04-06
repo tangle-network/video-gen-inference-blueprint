@@ -12,6 +12,7 @@ use blueprint_sdk::std::time::Duration;
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
+use tangle_inference_core::PerSecondCostModel;
 
 use crate::config::{OperatorConfig, VideoBackendMode};
 
@@ -117,23 +118,40 @@ pub enum JobKind {
     Interpolate,
 }
 
-/// Video generation backend client.
-pub struct VideoBackend {
-    pub(crate) config: Arc<OperatorConfig>,
+/// Video generation backend. Attached to `AppState` via `AppStateBuilder::backend`.
+/// Owns the HTTP client, in-memory job registry, and the per-second cost model.
+pub struct VideoGenBackend {
+    pub config: Arc<OperatorConfig>,
     client: reqwest::Client,
     /// In-memory job store. In production, back with persistent storage.
-    jobs: DashMap<String, VideoJob>,
+    jobs: Arc<DashMap<String, VideoJob>>,
+    pub cost_model: Arc<PerSecondCostModel>,
 }
 
-impl VideoBackend {
+impl VideoGenBackend {
     pub fn new(config: Arc<OperatorConfig>) -> anyhow::Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(config.video.job_timeout_secs))
             .build()?;
+        let cost_model = Arc::new(PerSecondCostModel {
+            price_per_second: config.video.price_per_second,
+        });
         Ok(Self {
             config,
             client,
-            jobs: DashMap::new(),
+            jobs: Arc::new(DashMap::new()),
+            cost_model,
+        })
+    }
+
+    /// Calculate the cost for a video of `duration_secs` seconds. Uses
+    /// centiseconds internally for sub-second granularity.
+    pub fn calculate_cost(&self, duration_secs: u32) -> u64 {
+        use std::collections::HashMap;
+        use tangle_inference_core::{CostModel, CostParams};
+        self.cost_model.calculate_cost(&CostParams {
+            extra: HashMap::from([("centiseconds".to_string(), (duration_secs as u64) * 100)]),
+            ..Default::default()
         })
     }
 
@@ -710,7 +728,15 @@ impl VideoBackend {
             config: self.config.clone(),
             client: self.client.clone(),
             jobs: self.jobs.clone(),
+            cost_model: self.cost_model.clone(),
         }
+    }
+
+    /// Create a cheap clone that shares the underlying job registry, cost
+    /// model, and HTTP client. Used to attach the backend to `AppState` while
+    /// still keeping a copy for the watchdog loop and on-chain job handler.
+    pub fn clone_cheap(this: &Self) -> Self {
+        this.clone_for_spawn()
     }
 }
 

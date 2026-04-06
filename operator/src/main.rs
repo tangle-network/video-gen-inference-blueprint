@@ -8,7 +8,7 @@ use blueprint_sdk::runner::BlueprintRunner;
 use blueprint_sdk::tangle::{TangleConsumer, TangleProducer};
 
 use video_gen_inference::config::OperatorConfig;
-use video_gen_inference::health;
+use video_gen_inference::detect_gpus;
 use video_gen_inference::VideoGenServer;
 
 fn setup_log() {
@@ -74,7 +74,7 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
     }
 
     // GPU detection (non-fatal)
-    match health::detect_gpus().await {
+    match detect_gpus().await {
         Ok(gpus) => {
             tracing::info!(count = gpus.len(), "detected GPUs");
             for gpu in &gpus {

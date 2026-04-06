@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use tokio::sync::Semaphore;
 use wiremock::{
     matchers::{method, path},
     Mock, MockServer, ResponseTemplate,
@@ -8,9 +7,10 @@ use wiremock::{
 
 use video_gen_inference::config::{
     BillingConfig, GpuConfig, OperatorConfig, ServerConfig, TangleConfig, VideoBackendMode,
-    VideoConfig,
+    VideoGenConfig,
 };
-use video_gen_inference::video::VideoBackend;
+use video_gen_inference::video::VideoGenBackend;
+use video_gen_inference::{AppStateBuilder, BillingClient, NonceStore};
 
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
@@ -25,18 +25,18 @@ fn test_config(backend_port: u16) -> OperatorConfig {
         tangle: TangleConfig {
             rpc_url: "http://localhost:8545".into(),
             chain_id: 31337,
-            operator_key: "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+            operator_key: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
                 .into(),
-            tangle_core: "0x0000000000000000000000000000000000000000".into(),
             shielded_credits: "0x0000000000000000000000000000000000000000".into(),
             blueprint_id: 1,
             service_id: Some(1),
         },
-        video: VideoConfig {
+        video: VideoGenConfig {
             mode: VideoBackendMode::Api,
             endpoint: format!("http://127.0.0.1:{backend_port}"),
             api_key: None,
             model: "test-video-model".into(),
+            price_per_second: 100_000,
             max_duration_secs: 10,
             default_fps: 24,
             supported_resolutions: vec![
@@ -60,16 +60,17 @@ fn test_config(backend_port: u16) -> OperatorConfig {
         server: ServerConfig {
             host: "127.0.0.1".into(),
             port: 0,
-            max_concurrent_jobs: 4,
+            max_concurrent_requests: 4,
             max_request_body_bytes: 16 * 1024 * 1024,
-            max_per_account_jobs: 0,
+            stream_timeout_secs: 30,
+            idle_chunk_timeout_secs: 30,
+            max_line_buf_bytes: 1024 * 1024,
+            max_per_account_requests: 0,
         },
         billing: BillingConfig {
-            required: false,
-            price_per_second: 100000,
-            max_spend_per_request: 10000000,
-            min_credit_balance: 1000,
             billing_required: false,
+            max_spend_per_request: 10_000_000,
+            min_credit_balance: 1000,
             min_charge_amount: 0,
             claim_max_retries: 3,
             clock_skew_tolerance_secs: 30,
@@ -95,16 +96,26 @@ async fn start_test_server(
     config.server.port = server_port;
     let config = Arc::new(config);
 
-    let backend = Arc::new(VideoBackend::new(config.clone()).unwrap());
-    let semaphore = Arc::new(Semaphore::new(4));
+    let backend = VideoGenBackend::new(config.clone()).unwrap();
+    let billing_client = Arc::new(
+        BillingClient::new(&config.tangle, &config.billing)
+            .expect("billing client construction should succeed with test config"),
+    );
+    let operator_address = billing_client.operator_address();
+    let nonce_store = Arc::new(NonceStore::load(None));
+
+    let state = AppStateBuilder::new()
+        .billing(billing_client)
+        .nonce_store(nonce_store)
+        .server_config(Arc::new(config.server.clone()))
+        .billing_config(Arc::new(config.billing.clone()))
+        .tangle_config(Arc::new(config.tangle.clone()))
+        .operator_address(operator_address)
+        .backend(backend)
+        .build()
+        .expect("AppState build");
+
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-
-    let state = video_gen_inference::server::AppState {
-        config,
-        backend,
-        semaphore,
-    };
-
     let handle = video_gen_inference::server::start(state, shutdown_rx)
         .await
         .unwrap();
@@ -118,10 +129,11 @@ async fn start_test_server(
 async fn test_health_check_healthy() {
     let mock = MockServer::start().await;
 
-    // API mode uses /health for health checks
     Mock::given(method("GET"))
         .and(path("/health"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"status": "ok"})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"status": "ok"})),
+        )
         .mount(&mock)
         .await;
 
@@ -139,7 +151,6 @@ async fn test_health_check_healthy() {
 #[tokio::test]
 async fn test_health_check_unhealthy() {
     let mock = MockServer::start().await;
-    // no mock -> 404 -> unhealthy
 
     let (port, _tx, _h) = start_test_server(mock.address().port()).await;
 
@@ -153,15 +164,12 @@ async fn test_health_check_unhealthy() {
 async fn test_submit_video_job_and_poll() {
     let mock = MockServer::start().await;
 
-    // Health check for backend
     Mock::given(method("GET"))
         .and(path("/health"))
         .respond_with(ResponseTemplate::new(200))
         .mount(&mock)
         .await;
 
-    // API mode: POST to root returns job id, the backend spawns async processing.
-    // The video backend's execute_api POSTs to the endpoint root.
     Mock::given(method("POST"))
         .and(path("/"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -174,7 +182,6 @@ async fn test_submit_video_job_and_poll() {
 
     let client = reqwest::Client::new();
 
-    // Submit a job
     let resp = client
         .post(format!("http://127.0.0.1:{port}/v1/video/generate"))
         .json(&serde_json::json!({
@@ -192,7 +199,6 @@ async fn test_submit_video_job_and_poll() {
     assert_eq!(body["status"], "queued");
     let job_id = body["job_id"].as_str().unwrap();
 
-    // Poll for the job (it will be queued or processing)
     let resp = client
         .get(format!("http://127.0.0.1:{port}/v1/video/{job_id}"))
         .send()
@@ -202,7 +208,6 @@ async fn test_submit_video_job_and_poll() {
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["job_id"], job_id);
-    // Status should be queued or processing (async execution)
     let status = body["status"].as_str().unwrap();
     assert!(
         status == "queued" || status == "processing" || status == "completed" || status == "failed",
@@ -213,7 +218,6 @@ async fn test_submit_video_job_and_poll() {
 #[tokio::test]
 async fn test_submit_video_empty_prompt() {
     let mock = MockServer::start().await;
-
     let (port, _tx, _h) = start_test_server(mock.address().port()).await;
 
     let client = reqwest::Client::new();
@@ -235,7 +239,6 @@ async fn test_submit_video_empty_prompt() {
 #[tokio::test]
 async fn test_submit_video_duration_exceeded() {
     let mock = MockServer::start().await;
-
     let (port, _tx, _h) = start_test_server(mock.address().port()).await;
 
     let client = reqwest::Client::new();
@@ -251,13 +254,15 @@ async fn test_submit_video_duration_exceeded() {
 
     assert_eq!(resp.status(), 400);
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert!(body["error"]["message"].as_str().unwrap().contains("exceeds"));
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("exceeds"));
 }
 
 #[tokio::test]
 async fn test_submit_video_unsupported_resolution() {
     let mock = MockServer::start().await;
-
     let (port, _tx, _h) = start_test_server(mock.address().port()).await;
 
     let client = reqwest::Client::new();
@@ -274,13 +279,15 @@ async fn test_submit_video_unsupported_resolution() {
 
     assert_eq!(resp.status(), 400);
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert!(body["error"]["message"].as_str().unwrap().contains("not supported"));
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("not supported"));
 }
 
 #[tokio::test]
 async fn test_get_nonexistent_job() {
     let mock = MockServer::start().await;
-
     let (port, _tx, _h) = start_test_server(mock.address().port()).await;
 
     let resp = reqwest::get(format!("http://127.0.0.1:{port}/v1/video/nonexistent-id"))
@@ -288,5 +295,8 @@ async fn test_get_nonexistent_job() {
         .unwrap();
     assert_eq!(resp.status(), 404);
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert!(body["error"]["message"].as_str().unwrap().contains("not found"));
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("not found"));
 }
