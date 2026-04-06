@@ -4,7 +4,7 @@
 //! metrics, app state container) lives in `tangle-inference-core`. This module
 //! only contains the video-gen-specific HTTP handlers and request/response types.
 //!
-//! Because video generation is asynchronous (30s–5min per job), the billing
+//! Because video generation is asynchronous (30s-5min per job), the billing
 //! flow is different from the streaming/LLM path:
 //!   1. Client POSTs to `/v1/video/generate` with an `x402` SpendAuth header.
 //!   2. Operator validates the SpendAuth (signature, balance, nonce) and
@@ -32,9 +32,9 @@ use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use tangle_inference_core::server::{
-    error_response, extract_x402_spend_auth, payment_required, validate_spend_auth,
+    acquire_permit, billing_gate, error_response, gpu_health_handler, metrics_handler,
 };
-use tangle_inference_core::{detect_gpus, AppState, GpuInfo, SpendAuthPayload};
+use tangle_inference_core::{detect_gpus, AppState, SpendAuthPayload};
 
 use crate::video::{
     Img2VidRequest, InterpolateRequest, UpscaleRequest, VideoGenBackend, VideoGenRequest,
@@ -61,7 +61,7 @@ pub async fn start(
         .route("/v1/video/:job_id", get(get_video_job))
         .route("/v1/operator", get(operator_info))
         .route("/health", get(health_check))
-        .route("/health/gpu", get(gpu_health))
+        .route("/health/gpu", get(gpu_health_handler))
         .route("/metrics", get(metrics_handler))
         .layer(DefaultBodyLimit::max(max_body))
         .layer(TimeoutLayer::new(Duration::from_secs(stream_timeout)))
@@ -163,84 +163,6 @@ fn backend_from(state: &AppState) -> &VideoGenBackend {
         .expect("AppState backend is VideoGenBackend (checked in server::start)")
 }
 
-/// Resolve the effective SpendAuth for a request: inline body field wins over
-/// the `X-Payment-Signature` x402 header.
-fn resolve_spend_auth(
-    inline: Option<SpendAuthPayload>,
-    headers: &HeaderMap,
-) -> Option<SpendAuthPayload> {
-    inline.or_else(|| extract_x402_spend_auth(headers))
-}
-
-/// Run the full billing preflight: enforce `billing_required`, validate the
-/// SpendAuth, enforce cost ceilings, and pre-authorize the spend on-chain.
-/// Returns the parsed pre-auth amount on success.
-async fn preflight_billing(
-    state: &AppState,
-    backend: &VideoGenBackend,
-    spend_auth: Option<&SpendAuthPayload>,
-    estimated_cost: u64,
-) -> Result<Option<u64>, Response> {
-    // 1. Enforce billing_required — return 402 if no SpendAuth provided.
-    if state.billing_config.billing_required && spend_auth.is_none() {
-        return Err(payment_required(
-            &state.billing_config,
-            &state.tangle_config,
-            state.operator_address,
-            estimated_cost,
-        ));
-    }
-
-    let Some(auth) = spend_auth else {
-        return Ok(None);
-    };
-
-    // 2. Validate SpendAuth (signature, balance, nonce replay, operator/service match).
-    let preauth = validate_spend_auth(state, auth).await?;
-
-    // 3. Cost sanity check — amount must cover the estimated job cost.
-    if estimated_cost > 0 && preauth < estimated_cost {
-        return Err(error_response(
-            StatusCode::PAYMENT_REQUIRED,
-            format!(
-                "spend authorization ({preauth}) is less than estimated cost ({estimated_cost})"
-            ),
-            "billing_error",
-            "insufficient_amount",
-        ));
-    }
-
-    // 4. Backend health gate before committing gas.
-    if !backend.is_healthy().await {
-        return Err(error_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "video backend is unavailable — billing not initiated".to_string(),
-            "upstream_error",
-            "backend_unhealthy",
-        ));
-    }
-
-    // 5. Authorize the spend on-chain (reserves payment upfront).
-    if let Err(e) = state.billing.authorize_spend(auth).await {
-        tracing::error!(error = %e, "authorizeSpend failed");
-        return Err(error_response(
-            StatusCode::PAYMENT_REQUIRED,
-            format!("billing authorization failed: {e}"),
-            "billing_error",
-            "authorization_failed",
-        ));
-    }
-
-    // Nonce is recorded inside validate_spend_auth — no separate insert needed.
-
-    // 6. Note: settlement (`claimPayment`) happens out-of-band when the job
-    //    completes. For now we rely on the contract settling the full pre-auth
-    //    (the llm blueprint does the same via `settle_billing`). Real video
-    //    jobs would hook into the job-completion callback in `VideoGenBackend`
-    //    to claim payment with the actual metered duration.
-    Ok(Some(preauth))
-}
-
 // --- Handlers ---
 
 async fn submit_video_job(
@@ -301,31 +223,19 @@ async fn submit_video_job(
 
     let fps = req.fps.unwrap_or(backend.config.video.default_fps);
 
-    // Acquire global semaphore permit
-    let _permit = match state.semaphore.clone().try_acquire_owned() {
+    // Concurrency gate
+    let _permit = match acquire_permit(&state) {
         Ok(p) => p,
-        Err(_) => {
-            return error_response(
-                StatusCode::TOO_MANY_REQUESTS,
-                format!(
-                    "server at capacity ({} concurrent jobs max)",
-                    state.server_config.max_concurrent_requests
-                ),
-                "rate_limit_error",
-                "too_many_requests",
-            );
-        }
+        Err(resp) => return resp,
     };
 
-    // Billing preflight — upfront authorize for the requested duration.
+    // Billing gate — upfront authorize for the requested duration
     let estimated_cost = backend.calculate_cost(req.duration_secs);
-    let spend_auth = resolve_spend_auth(req.spend_auth, &headers);
-    if let Err(resp) = preflight_billing(&state, backend, spend_auth.as_ref(), estimated_cost).await
-    {
+    if let Err(resp) = billing_gate(&state, &headers, req.spend_auth, estimated_cost).await {
         return resp;
     }
 
-    // Submit the job — async execution via the backend's job registry.
+    // Submit the job
     let gen_req = VideoGenRequest {
         prompt: req.prompt,
         duration_secs: req.duration_secs,
@@ -417,22 +327,13 @@ async fn submit_img2vid_job(
         );
     }
 
-    let _permit = match state.semaphore.clone().try_acquire_owned() {
+    let _permit = match acquire_permit(&state) {
         Ok(p) => p,
-        Err(_) => {
-            return error_response(
-                StatusCode::TOO_MANY_REQUESTS,
-                "server at capacity".to_string(),
-                "rate_limit_error",
-                "too_many_requests",
-            );
-        }
+        Err(resp) => return resp,
     };
 
     let estimated_cost = backend.calculate_cost(req.duration_secs);
-    let spend_auth = resolve_spend_auth(req.spend_auth, &headers);
-    if let Err(resp) = preflight_billing(&state, backend, spend_auth.as_ref(), estimated_cost).await
-    {
+    if let Err(resp) = billing_gate(&state, &headers, req.spend_auth, estimated_cost).await {
         return resp;
     }
 
@@ -502,21 +403,13 @@ async fn submit_upscale_job(
         );
     }
 
-    let _permit = match state.semaphore.clone().try_acquire_owned() {
+    let _permit = match acquire_permit(&state) {
         Ok(p) => p,
-        Err(_) => {
-            return error_response(
-                StatusCode::TOO_MANY_REQUESTS,
-                "server at capacity".to_string(),
-                "rate_limit_error",
-                "too_many_requests",
-            );
-        }
+        Err(resp) => return resp,
     };
 
-    // Upscale pricing: charge a flat 1-second equivalent (no duration input).
-    let spend_auth = resolve_spend_auth(req.spend_auth, &headers);
-    if let Err(resp) = preflight_billing(&state, backend, spend_auth.as_ref(), 0).await {
+    let spend_auth = req.spend_auth;
+    if let Err(resp) = billing_gate(&state, &headers, spend_auth, 0).await {
         return resp;
     }
 
@@ -584,20 +477,13 @@ async fn submit_interpolate_job(
         );
     }
 
-    let _permit = match state.semaphore.clone().try_acquire_owned() {
+    let _permit = match acquire_permit(&state) {
         Ok(p) => p,
-        Err(_) => {
-            return error_response(
-                StatusCode::TOO_MANY_REQUESTS,
-                "server at capacity".to_string(),
-                "rate_limit_error",
-                "too_many_requests",
-            );
-        }
+        Err(resp) => return resp,
     };
 
-    let spend_auth = resolve_spend_auth(req.spend_auth, &headers);
-    if let Err(resp) = preflight_billing(&state, backend, spend_auth.as_ref(), 0).await {
+    let spend_auth = req.spend_auth;
+    if let Err(resp) = billing_gate(&state, &headers, spend_auth, 0).await {
         return resp;
     }
 
@@ -702,30 +588,4 @@ async fn health_check(
     } else {
         Err(StatusCode::SERVICE_UNAVAILABLE)
     }
-}
-
-async fn gpu_health() -> Result<Json<Vec<GpuInfo>>, (StatusCode, String)> {
-    match detect_gpus().await {
-        Ok(gpus) => Ok(Json(gpus)),
-        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
-    }
-}
-
-async fn metrics_handler() -> Response {
-    let body = tangle_inference_core::metrics::gather();
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(
-            axum::http::header::CONTENT_TYPE,
-            "text/plain; version=0.0.4; charset=utf-8",
-        )
-        .body(axum::body::Body::from(body))
-        .unwrap_or_else(|e| {
-            error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to build metrics response: {e}"),
-                "internal_error",
-                "response_build_failed",
-            )
-        })
 }
