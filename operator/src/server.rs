@@ -229,8 +229,9 @@ async fn submit_video_job(
         Err(resp) => return resp,
     };
 
-    // Billing gate — upfront authorize for the requested duration
-    let estimated_cost = backend.calculate_cost(req.duration_secs);
+    // Billing gate — upfront authorize based on estimated GPU compute time
+    let estimated_compute_secs = backend.estimate_compute_secs(req.duration_secs);
+    let estimated_cost = backend.calculate_cost(estimated_compute_secs);
     if let Err(resp) = billing_gate(&state, &headers, req.spend_auth, estimated_cost).await {
         return resp;
     }
@@ -332,7 +333,8 @@ async fn submit_img2vid_job(
         Err(resp) => return resp,
     };
 
-    let estimated_cost = backend.calculate_cost(req.duration_secs);
+    let estimated_compute_secs = backend.estimate_compute_secs(req.duration_secs);
+    let estimated_cost = backend.calculate_cost(estimated_compute_secs);
     if let Err(resp) = billing_gate(&state, &headers, req.spend_auth, estimated_cost).await {
         return resp;
     }
@@ -557,7 +559,7 @@ async fn operator_info(State(state): State<AppState>) -> Json<serde_json::Value>
             "default_resolution": backend.config.video.default_resolution,
         },
         "pricing": {
-            "price_per_second": backend.config.video.price_per_second,
+            "price_per_compute_second": backend.config.video.price_per_compute_second,
             "currency": "tsUSD",
         },
         "gpu": {

@@ -134,7 +134,7 @@ impl VideoGenBackend {
             .timeout(Duration::from_secs(config.video.job_timeout_secs))
             .build()?;
         let cost_model = Arc::new(PerSecondCostModel {
-            price_per_second: config.video.price_per_second,
+            price_per_second: config.video.price_per_compute_second,
         });
         Ok(Self {
             config,
@@ -144,15 +144,22 @@ impl VideoGenBackend {
         })
     }
 
-    /// Calculate the cost for a video of `duration_secs` seconds. Uses
-    /// centiseconds internally for sub-second granularity.
-    pub fn calculate_cost(&self, duration_secs: u32) -> u64 {
+    /// Calculate the cost for `compute_secs` seconds of GPU compute time.
+    /// Uses centiseconds internally for sub-second granularity.
+    pub fn calculate_cost(&self, compute_secs: u64) -> u64 {
         use std::collections::HashMap;
         use tangle_inference_core::{CostModel, CostParams};
         self.cost_model.calculate_cost(&CostParams {
-            extra: HashMap::from([("centiseconds".to_string(), (duration_secs as u64) * 100)]),
+            extra: HashMap::from([("centiseconds".to_string(), compute_secs * 100)]),
             ..Default::default()
         })
+    }
+
+    /// Estimate compute time in seconds for a video of given output duration.
+    /// Empirically, generation takes ~30x the output duration on current hardware.
+    pub fn estimate_compute_secs(&self, output_duration_secs: u32) -> u64 {
+        // Conservative estimate: 30x output duration for GPU compute
+        (output_duration_secs as u64) * 30
     }
 
     /// Check if the video backend is healthy.
