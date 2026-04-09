@@ -30,6 +30,9 @@ k256 = { workspace = true }
 # Shared inference operator infrastructure (billing, metrics, health, server helpers)
 tangle-inference-core = { git = "https://github.com/tangle-network/tangle-inference-core", branch = "master" }
 
+# Outbound job notifications (webhook callbacks + SSE streaming)
+blueprint-webhooks = { git = "https://github.com/tangle-network/blueprint", branch = "feat/wire-remote-gpu-provisioning", features = ["notifier"] }
+
 # Web framework
 axum = { version = "0.7", features = ["json", "macros"] }
 tower-http = { version = "0.5", features = ["cors", "limit", "trace", "timeout"] }

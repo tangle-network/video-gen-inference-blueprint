@@ -63,8 +63,9 @@ pub struct VideoGenConfig {
     /// Model identifier (e.g. "hunyuan-video", "ltx-video").
     pub model: String,
 
-    /// Price per second of generated video in base token units.
-    pub price_per_second: u64,
+    /// Price per second of GPU compute time in base token units.
+    /// Billing is based on wall-clock compute time, not output video duration.
+    pub price_per_compute_second: u64,
 
     /// Maximum video duration this operator supports (seconds).
     #[serde(default = "default_max_duration_secs")]
@@ -196,7 +197,7 @@ mod tests {
                 "mode": "local",
                 "endpoint": "http://127.0.0.1:8188",
                 "model": "hunyuan-video",
-                "price_per_second": 100000,
+                "price_per_compute_second": 100000,
                 "max_duration_secs": 10,
                 "default_fps": 24
             },
@@ -222,7 +223,7 @@ mod tests {
         assert_eq!(cfg.video.model, "hunyuan-video");
         assert_eq!(cfg.video.max_duration_secs, 10);
         assert_eq!(cfg.video.default_fps, 24);
-        assert_eq!(cfg.video.price_per_second, 100000);
+        assert_eq!(cfg.video.price_per_compute_second, 100000);
         assert_eq!(cfg.server.port, 8080);
         assert_eq!(cfg.gpu.expected_gpu_count, 1);
     }

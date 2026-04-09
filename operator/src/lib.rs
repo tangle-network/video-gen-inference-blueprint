@@ -24,6 +24,7 @@ use blueprint_sdk::runner::BackgroundService;
 use blueprint_sdk::tangle::extract::{TangleArg, TangleResult};
 use blueprint_sdk::tangle::layers::TangleLayer;
 use blueprint_sdk::Job;
+use blueprint_webhooks::notifier::{JobNotifier, NotifierConfig};
 use tokio::sync::oneshot;
 
 use crate::config::OperatorConfig;
@@ -72,8 +73,9 @@ fn register_video_backend(backend: Arc<VideoGenBackend>) {
 
 /// Initialize the video backend for testing (MultiHarness/BlueprintHarness).
 pub fn init_for_testing(config: Arc<OperatorConfig>) {
+    let notifier = Arc::new(JobNotifier::new(NotifierConfig::default()));
     let backend = Arc::new(
-        VideoGenBackend::new(config).expect("failed to create video backend for testing"),
+        VideoGenBackend::new(config, notifier).expect("failed to create video backend for testing"),
     );
     let _ = VIDEO_BACKEND.set(backend);
 }
@@ -220,8 +222,14 @@ impl BackgroundService for VideoGenServer {
         let config = self.config.clone();
 
         tokio::spawn(async move {
-            // 1. Create video backend
-            let backend = match VideoGenBackend::new(config.clone()) {
+            // 1. Create notifier + video backend
+            let notifier = Arc::new(JobNotifier::new(NotifierConfig {
+                signing_secret: std::env::var("WEBHOOK_SIGNING_SECRET")
+                    .unwrap_or_default(),
+                ..Default::default()
+            }));
+
+            let backend = match VideoGenBackend::new(config.clone(), notifier) {
                 Ok(b) => Arc::new(b),
                 Err(e) => {
                     tracing::error!(error = %e, "failed to create video backend");
