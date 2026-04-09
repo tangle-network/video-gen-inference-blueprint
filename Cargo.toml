@@ -25,3 +25,6 @@ k256 = { version = "0.13", features = ["ecdsa"] }
 prometheus = "0.13"
 futures-util = "0.3"
 tokio-stream = "0.1"
+
+[patch."https://github.com/tangle-network/blueprint"]
+blueprint-webhooks = { path = "../blueprint/crates/webhooks" }

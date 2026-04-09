@@ -152,6 +152,8 @@ pub struct VideoGenerateResponse {
     pub job_id: String,
     pub status: String,
     pub message: String,
+    /// Bearer token for connecting to the SSE events endpoint.
+    pub sse_token: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -264,6 +266,7 @@ async fn submit_video_job(
 
     match backend.submit_job(gen_req).await {
         Ok(job_id) => {
+            let sse_token = backend.notifier.register_job(&job_id).await;
             if let Some(ref url) = req.webhook_url {
                 backend.set_webhook_url(&job_id, url.clone());
             }
@@ -279,6 +282,7 @@ async fn submit_video_job(
                 status: "queued".to_string(),
                 message: "Video generation job submitted. Poll GET /v1/video/:job_id for status."
                     .to_string(),
+                sse_token,
             })
             .into_response()
         }
@@ -369,6 +373,7 @@ async fn submit_img2vid_job(
 
     match backend.img2vid(gen_req).await {
         Ok(job_id) => {
+            let sse_token = backend.notifier.register_job(&job_id).await;
             if let Some(ref url) = req.webhook_url {
                 backend.set_webhook_url(&job_id, url.clone());
             }
@@ -378,6 +383,7 @@ async fn submit_img2vid_job(
                 status: "queued".to_string(),
                 message: "Image-to-video job submitted. Poll GET /v1/video/:job_id for status."
                     .to_string(),
+                sse_token,
             })
             .into_response()
         }
@@ -446,6 +452,7 @@ async fn submit_upscale_job(
 
     match backend.upscale(upscale_req).await {
         Ok(job_id) => {
+            let sse_token = backend.notifier.register_job(&job_id).await;
             if let Some(ref url) = req.webhook_url {
                 backend.set_webhook_url(&job_id, url.clone());
             }
@@ -455,6 +462,7 @@ async fn submit_upscale_job(
                 status: "queued".to_string(),
                 message: "Upscale job submitted. Poll GET /v1/video/:job_id for status."
                     .to_string(),
+                sse_token,
             })
             .into_response()
         }
@@ -523,6 +531,7 @@ async fn submit_interpolate_job(
 
     match backend.interpolate(interp_req).await {
         Ok(job_id) => {
+            let sse_token = backend.notifier.register_job(&job_id).await;
             if let Some(ref url) = req.webhook_url {
                 backend.set_webhook_url(&job_id, url.clone());
             }
@@ -532,6 +541,7 @@ async fn submit_interpolate_job(
                 status: "queued".to_string(),
                 message: "Interpolation job submitted. Poll GET /v1/video/:job_id for status."
                     .to_string(),
+                sse_token,
             })
             .into_response()
         }
@@ -547,10 +557,39 @@ async fn submit_interpolate_job(
 /// SSE endpoint for real-time job status streaming.
 async fn sse_job_events(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(job_id): Path<String>,
-) -> impl IntoResponse {
+) -> Response {
     let backend = backend_from(&state);
-    let rx = backend.notifier.subscribe(&job_id).await;
+
+    // Validate bearer token
+    let token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+    match token {
+        Some(t) if backend.notifier.validate_job_token(&job_id, t).await => {}
+        _ => {
+            return error_response(
+                StatusCode::UNAUTHORIZED,
+                "invalid or missing SSE bearer token".into(),
+                "auth_error",
+                "invalid_sse_token",
+            );
+        }
+    }
+
+    let rx = match backend.notifier.subscribe(&job_id).await {
+        Some(r) => r,
+        None => {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "subscriber capacity exceeded".into(),
+                "capacity_error",
+                "too_many_subscribers",
+            );
+        }
+    };
     let stream = BroadcastStream::new(rx).filter_map(|result| match result {
         Ok(event) => {
             let data = serde_json::to_string(&event)
@@ -563,11 +602,13 @@ async fn sse_job_events(
         Err(_) => None,
     });
 
-    Sse::new(stream).keep_alive(
-        KeepAlive::new()
-            .interval(Duration::from_secs(15))
-            .text("ping"),
-    )
+    Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("ping"),
+        )
+        .into_response()
 }
 
 async fn get_video_job(State(state): State<AppState>, Path(job_id): Path<String>) -> Response {
