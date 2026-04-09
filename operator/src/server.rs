@@ -20,12 +20,17 @@ use blueprint_sdk::std::time::Duration;
 use axum::{
     extract::{DefaultBodyLimit, Path, State},
     http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     routing::{get, post},
     Json, Router as HttpRouter,
 };
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
+use tokio_stream::StreamExt;
+use tokio_stream::wrappers::BroadcastStream;
 use tokio::task::JoinHandle;
 use tower_http::cors::CorsLayer;
 use tower_http::timeout::TimeoutLayer;
@@ -59,6 +64,7 @@ pub async fn start(
         .route("/v1/video/upscale", post(submit_upscale_job))
         .route("/v1/video/interpolate", post(submit_interpolate_job))
         .route("/v1/video/:job_id", get(get_video_job))
+        .route("/v1/jobs/:job_id/events", get(sse_job_events))
         .route("/v1/operator", get(operator_info))
         .route("/health", get(health_check))
         .route("/health/gpu", get(gpu_health_handler))
@@ -101,6 +107,9 @@ pub struct VideoGenerateRequest {
     pub fps: Option<u32>,
     /// Optional inline SpendAuth. Usually provided via `X-Payment-Signature`.
     pub spend_auth: Option<SpendAuthPayload>,
+    /// Optional webhook URL for push notifications on job status changes.
+    #[serde(default)]
+    pub webhook_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -113,6 +122,9 @@ pub struct Img2VidHttpRequest {
     #[serde(default)]
     pub params: Option<serde_json::Value>,
     pub spend_auth: Option<SpendAuthPayload>,
+    /// Optional webhook URL for push notifications on job status changes.
+    #[serde(default)]
+    pub webhook_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -120,6 +132,9 @@ pub struct UpscaleHttpRequest {
     pub video_url: String,
     pub target_resolution: String,
     pub spend_auth: Option<SpendAuthPayload>,
+    /// Optional webhook URL for push notifications on job status changes.
+    #[serde(default)]
+    pub webhook_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -127,6 +142,9 @@ pub struct InterpolateHttpRequest {
     pub video_url: String,
     pub target_fps: u32,
     pub spend_auth: Option<SpendAuthPayload>,
+    /// Optional webhook URL for push notifications on job status changes.
+    #[serde(default)]
+    pub webhook_url: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -246,6 +264,9 @@ async fn submit_video_job(
 
     match backend.submit_job(gen_req).await {
         Ok(job_id) => {
+            if let Some(ref url) = req.webhook_url {
+                backend.set_webhook_url(&job_id, url.clone());
+            }
             tracing::info!(
                 job_id = %job_id,
                 duration_secs = req.duration_secs,
@@ -348,6 +369,9 @@ async fn submit_img2vid_job(
 
     match backend.img2vid(gen_req).await {
         Ok(job_id) => {
+            if let Some(ref url) = req.webhook_url {
+                backend.set_webhook_url(&job_id, url.clone());
+            }
             tracing::info!(job_id = %job_id, "img2vid job submitted");
             Json(VideoGenerateResponse {
                 job_id,
@@ -422,6 +446,9 @@ async fn submit_upscale_job(
 
     match backend.upscale(upscale_req).await {
         Ok(job_id) => {
+            if let Some(ref url) = req.webhook_url {
+                backend.set_webhook_url(&job_id, url.clone());
+            }
             tracing::info!(job_id = %job_id, target = %req.target_resolution, "upscale job submitted");
             Json(VideoGenerateResponse {
                 job_id,
@@ -496,6 +523,9 @@ async fn submit_interpolate_job(
 
     match backend.interpolate(interp_req).await {
         Ok(job_id) => {
+            if let Some(ref url) = req.webhook_url {
+                backend.set_webhook_url(&job_id, url.clone());
+            }
             tracing::info!(job_id = %job_id, target_fps = req.target_fps, "interpolate job submitted");
             Json(VideoGenerateResponse {
                 job_id,
@@ -512,6 +542,32 @@ async fn submit_interpolate_job(
             "job_submission_failed",
         ),
     }
+}
+
+/// SSE endpoint for real-time job status streaming.
+async fn sse_job_events(
+    State(state): State<AppState>,
+    Path(job_id): Path<String>,
+) -> impl IntoResponse {
+    let backend = backend_from(&state);
+    let rx = backend.notifier.subscribe(&job_id).await;
+    let stream = BroadcastStream::new(rx).filter_map(|result| match result {
+        Ok(event) => {
+            let data = serde_json::to_string(&event)
+                .unwrap_or_else(|_| r#"{"error":"serialize"}"#.to_string());
+            let sse_event = Event::default()
+                .event(event.status.to_string())
+                .data(data);
+            Some(Ok::<_, std::convert::Infallible>(sse_event))
+        }
+        Err(_) => None,
+    });
+
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("ping"),
+    )
 }
 
 async fn get_video_job(State(state): State<AppState>, Path(job_id): Path<String>) -> Response {

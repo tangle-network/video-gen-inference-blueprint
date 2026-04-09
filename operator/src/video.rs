@@ -10,6 +10,7 @@ use base64::Engine as _;
 use blueprint_sdk::std::sync::Arc;
 use blueprint_sdk::std::time::Duration;
 
+use blueprint_webhooks::notifier::{JobEvent, JobNotifier, JobStatus as NotifierJobStatus};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use tangle_inference_core::PerSecondCostModel;
@@ -126,10 +127,14 @@ pub struct VideoGenBackend {
     /// In-memory job store. In production, back with persistent storage.
     jobs: Arc<DashMap<String, VideoJob>>,
     pub cost_model: Arc<PerSecondCostModel>,
+    /// Outbound job notifier (webhook callbacks + SSE).
+    pub notifier: Arc<JobNotifier>,
+    /// Per-job webhook callback URLs provided at submission time.
+    webhook_urls: Arc<DashMap<String, String>>,
 }
 
 impl VideoGenBackend {
-    pub fn new(config: Arc<OperatorConfig>) -> anyhow::Result<Self> {
+    pub fn new(config: Arc<OperatorConfig>, notifier: Arc<JobNotifier>) -> anyhow::Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(config.video.job_timeout_secs))
             .build()?;
@@ -141,7 +146,41 @@ impl VideoGenBackend {
             client,
             jobs: Arc::new(DashMap::new()),
             cost_model,
+            notifier,
+            webhook_urls: Arc::new(DashMap::new()),
         })
+    }
+
+    /// Store a webhook URL for a job. Called at submission time if the client provided one.
+    pub fn set_webhook_url(&self, job_id: &str, url: String) {
+        self.webhook_urls.insert(job_id.to_string(), url);
+    }
+
+    /// Emit a notification for a job status change.
+    async fn emit_notification(&self, job_id: &str, status: &JobStatus, result: Option<serde_json::Value>, error: Option<&str>) {
+        let notifier_status = match status {
+            JobStatus::Queued => NotifierJobStatus::Queued,
+            JobStatus::Processing => NotifierJobStatus::Processing,
+            JobStatus::Completed => NotifierJobStatus::Completed,
+            JobStatus::Failed => NotifierJobStatus::Failed,
+        };
+
+        let event = JobEvent {
+            status: notifier_status,
+            result,
+            error: error.map(|s| s.to_string()),
+            ..Default::default()
+        };
+
+        let webhook_url = self.webhook_urls.get(job_id).map(|r| r.clone());
+        if let Err(e) = self.notifier.notify(job_id, event, webhook_url.as_deref()).await {
+            tracing::warn!(job_id, error = %e, "failed to deliver job notification");
+        }
+
+        // Clean up webhook URL on terminal status
+        if matches!(status, JobStatus::Completed | JobStatus::Failed) {
+            self.webhook_urls.remove(job_id);
+        }
     }
 
     /// Calculate the cost for `compute_secs` seconds of GPU compute time.
@@ -352,6 +391,7 @@ impl VideoGenBackend {
         if let Some(mut job) = self.jobs.get_mut(&job_id) {
             job.status = JobStatus::Processing;
         }
+        self.emit_notification(&job_id, &JobStatus::Processing, None, None).await;
 
         let start = std::time::Instant::now();
 
@@ -368,9 +408,9 @@ impl VideoGenBackend {
 
         if let Some(mut job) = self.jobs.get_mut(&job_id) {
             match result {
-                Ok(output_url) => {
+                Ok(ref output_url) => {
                     job.status = JobStatus::Completed;
-                    job.output_url = Some(output_url);
+                    job.output_url = Some(output_url.clone());
                     job.completed_at = Some(now);
                     job.generation_time_ms = Some(elapsed_ms);
                     tracing::info!(
@@ -379,7 +419,7 @@ impl VideoGenBackend {
                         "video generation completed"
                     );
                 }
-                Err(e) => {
+                Err(ref e) => {
                     job.status = JobStatus::Failed;
                     job.error = Some(e.to_string());
                     job.completed_at = Some(now);
@@ -390,6 +430,20 @@ impl VideoGenBackend {
                         "video generation failed"
                     );
                 }
+            }
+        }
+
+        match &result {
+            Ok(output_url) => {
+                self.emit_notification(
+                    &job_id,
+                    &JobStatus::Completed,
+                    Some(serde_json::json!({ "output_url": output_url })),
+                    None,
+                ).await;
+            }
+            Err(e) => {
+                self.emit_notification(&job_id, &JobStatus::Failed, None, Some(&e.to_string())).await;
             }
         }
     }
@@ -639,6 +693,7 @@ impl VideoGenBackend {
         if let Some(mut job) = self.jobs.get_mut(&job_id) {
             job.status = JobStatus::Processing;
         }
+        self.emit_notification(&job_id, &JobStatus::Processing, None, None).await;
 
         let start = std::time::Instant::now();
         let payload = build_payload();
@@ -711,20 +766,34 @@ impl VideoGenBackend {
 
         if let Some(mut job) = self.jobs.get_mut(&job_id) {
             match result {
-                Ok(output_url) => {
+                Ok(ref output_url) => {
                     job.status = JobStatus::Completed;
-                    job.output_url = Some(output_url);
+                    job.output_url = Some(output_url.clone());
                     job.completed_at = Some(now);
                     job.generation_time_ms = Some(elapsed_ms);
                     tracing::info!(job_id = %job_id, operation, elapsed_ms, "{operation} completed");
                 }
-                Err(e) => {
+                Err(ref e) => {
                     job.status = JobStatus::Failed;
                     job.error = Some(e.to_string());
                     job.completed_at = Some(now);
                     job.generation_time_ms = Some(elapsed_ms);
                     tracing::error!(job_id = %job_id, operation, error = %e, "{operation} failed");
                 }
+            }
+        }
+
+        match &result {
+            Ok(output_url) => {
+                self.emit_notification(
+                    &job_id,
+                    &JobStatus::Completed,
+                    Some(serde_json::json!({ "output_url": output_url })),
+                    None,
+                ).await;
+            }
+            Err(e) => {
+                self.emit_notification(&job_id, &JobStatus::Failed, None, Some(&e.to_string())).await;
             }
         }
     }
@@ -736,6 +805,8 @@ impl VideoGenBackend {
             client: self.client.clone(),
             jobs: self.jobs.clone(),
             cost_model: self.cost_model.clone(),
+            notifier: self.notifier.clone(),
+            webhook_urls: self.webhook_urls.clone(),
         }
     }
 
