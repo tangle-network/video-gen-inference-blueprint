@@ -1,0 +1,54 @@
+{
+  "metadata_uri": "ipfs://",
+  "manager": "0x0000000000000000000000000000000000000000",
+  "metadata": {
+    "name": "video-gen-inference",
+    "description": "Video and image generation operator via ComfyUI workflows on Tangle",
+    "author": "Tangle Network",
+    "license": "MIT OR Apache-2.0",
+    "website": "https://tangle.tools",
+    "code_repository": "https://github.com/tangle-network/video-gen-inference-blueprint",
+    "profiling_data": "{\"execution_profile\":{\"gpu\":{\"policy\":\"required\",\"min_count\":1,\"min_vram_gb\":24}}}"
+  },
+  "config": {
+    "membership": "Dynamic",
+    "min_operators": 1,
+    "max_operators": 0
+  },
+  "supported_memberships": ["Dynamic", "Fixed"],
+  "jobs": [
+    {
+      "name": "generate_video",
+      "params": ["(string,string,uint32,uint32,uint32,uint32)"],
+      "result": ["(bytes,string,uint32,uint32,uint32)"],
+      "verifier": "None"
+    }
+  ],
+  "sources": [
+    {
+      "kind": "Native",
+      "native": {
+        "fetcher": "Github",
+        "entrypoint": "./video-gen-operator",
+        "github": {
+          "owner": "tangle-network",
+          "repo": "video-gen-inference-blueprint",
+          "tag": "v0.1.0",
+          "binaries": [
+            {
+              "name": "video-gen-operator",
+              "arch": "amd64",
+              "os": "linux",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        }
+      },
+      "testing": {
+        "cargo_package": "video-gen-inference",
+        "cargo_bin": "video-gen-operator",
+        "base_path": "."
+      }
+    }
+  ]
+}
