@@ -54,6 +54,9 @@ uuid = { version = "1", features = ["v4"] }
 dashmap = "6"
 base64 = "0.22"
 
+[build-dependencies]
+serde_json = { workspace = true }
+
 [dev-dependencies]
 blueprint-sdk = { git = "https://github.com/tangle-network/blueprint", branch = "main", features = ["testing", "tangle"] }
 blueprint-anvil-testing-utils = { git = "https://github.com/tangle-network/blueprint", branch = "main" }

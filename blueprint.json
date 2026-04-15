@@ -1,0 +1,24 @@
+{
+  "name": "video-gen-inference",
+  "description": "Video generation and image synthesis operator via ComfyUI workflows on Tangle",
+  "version": "0.1.0",
+  "manager": {
+    "Evm": "VideoGenBSM"
+  },
+  "master_revision": "Latest",
+  "jobs": [
+    {
+      "name": "generate_video",
+      "job_index": 0,
+      "description": "Generate video or image from text/image prompt via ComfyUI",
+      "inputs": [
+        "(string,string,uint32,uint32,uint32,uint32)"
+      ],
+      "outputs": [
+        "(bytes,string,uint32,uint32,uint32)"
+      ],
+      "required_results": 1,
+      "execution": "local"
+    }
+  ]
+}

@@ -550,7 +550,8 @@ async fn sse_job_events(
     Path(job_id): Path<String>,
 ) -> impl IntoResponse {
     let backend = backend_from(&state);
-    let rx = backend.notifier.subscribe(&job_id).await;
+    let rx = backend.notifier.subscribe(&job_id).await
+        .expect("notifier must have active sender for job");
     let stream = BroadcastStream::new(rx).filter_map(|result| match result {
         Ok(event) => {
             let data = serde_json::to_string(&event)
