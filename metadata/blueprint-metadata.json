@@ -1,0 +1,220 @@
+{
+  "name": "Video Generation Blueprint",
+  "description": "Decentralized video generation on Tangle through ComfyUI, Modal, Replicate, or API-backed operators with async job handling.",
+  "author": "Tangle Network",
+  "category": "AI Inference",
+  "image": null,
+  "website": "https://tangle.tools",
+  "codeRepository": "https://github.com/tangle-network/video-gen-inference-blueprint",
+  "docs": "https://github.com/tangle-network/video-gen-inference-blueprint#readme",
+  "integrity": null,
+  "blueprintUi": {
+    "displayName": "Video Generation",
+    "description": "Provision video generation services, submit long-running render jobs, and track backend mode, VRAM readiness, duration pricing, and outputs.",
+    "requestedSlug": "video-generation",
+    "publisher": {
+      "name": "Tangle Network",
+      "namespace": "tangle",
+      "verified": false
+    },
+    "resources": {
+      "serviceLabel": "Video service",
+      "itemLabel": "Video job",
+      "itemRoute": "runs"
+    },
+    "surfaces": [
+      "generic-overview",
+      "service-explorer",
+      "service-console",
+      "actions-panel",
+      "resources",
+      "metrics"
+    ],
+    "theme": {
+      "badgeLabel": "Async video generation",
+      "accentColor": "#BE123C",
+      "secondaryColor": "#4C0519",
+      "icon": "spark"
+    },
+    "overviewCards": [
+      {
+        "id": "async-render-queue",
+        "kind": "callout",
+        "title": "Async render queue",
+        "description": "Submit prompts, receive job_id, poll for completion over 30s\u20135min. Webhook push notifications supported.",
+        "tone": "info"
+      },
+      {
+        "id": "backend-modes",
+        "kind": "checklist",
+        "title": "Flexible backends",
+        "items": [
+          "Local ComfyUI (Hunyuan Video, LTX-Video)",
+          "Modal API proxy",
+          "Replicate API proxy",
+          "TEE attestation capable"
+        ],
+        "tone": "success"
+      },
+      {
+        "id": "duration-vram-pricing",
+        "kind": "stat",
+        "title": "Per-second compute billing",
+        "description": "VRAM requirements enforced on-chain; pricing by wall-clock GPU time, not output length.",
+        "value": "Verified",
+        "tone": "neutral"
+      }
+    ],
+    "actions": [
+      {
+        "id": "provision-video-service",
+        "label": "Provision video service",
+        "description": "Launch a new video generation service with backend selection (local ComfyUI, Modal, or Replicate) and max duration limits.",
+        "target": "service",
+        "submitLabel": "Provision",
+        "fields": [
+          {
+            "key": "backend_mode",
+            "label": "Backend",
+            "input": "select",
+            "required": true,
+            "options": [
+              {
+                "label": "Local ComfyUI",
+                "value": "local"
+              },
+              {
+                "label": "Modal API",
+                "value": "modal"
+              },
+              {
+                "label": "Replicate API",
+                "value": "replicate"
+              }
+            ]
+          },
+          {
+            "key": "max_duration_secs",
+            "label": "Max video duration (seconds)",
+            "input": "number",
+            "required": true,
+            "placeholder": "8"
+          },
+          {
+            "key": "endpoint_url",
+            "label": "Backend endpoint",
+            "input": "text",
+            "required": true,
+            "placeholder": "http://localhost:8188"
+          }
+        ]
+      },
+      {
+        "id": "submit-video-job",
+        "label": "Generate video",
+        "description": "Submit a text-to-video generation job to the queue with prompt, duration, and optional resolution.",
+        "target": "service",
+        "submitLabel": "Generate",
+        "fields": [
+          {
+            "key": "prompt",
+            "label": "Prompt",
+            "input": "textarea",
+            "required": true,
+            "placeholder": "A camera pan across a decentralized GPU datacenter with LED racks glowing."
+          },
+          {
+            "key": "duration_secs",
+            "label": "Duration (seconds)",
+            "input": "number",
+            "required": true,
+            "placeholder": "5"
+          },
+          {
+            "key": "resolution",
+            "label": "Resolution",
+            "input": "select",
+            "required": false,
+            "options": [
+              {
+                "label": "1280x720",
+                "value": "1280x720"
+              },
+              {
+                "label": "1920x1080",
+                "value": "1920x1080"
+              },
+              {
+                "label": "2560x1440",
+                "value": "2560x1440"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "resourceViews": [
+      {
+        "id": "video-jobs",
+        "title": "Video jobs",
+        "kind": "timeline",
+        "target": "resource",
+        "defaultSort": "updated_at:desc",
+        "columns": [
+          {
+            "key": "job_id",
+            "label": "Job",
+            "emphasis": true
+          },
+          {
+            "key": "backend",
+            "label": "Backend"
+          },
+          {
+            "key": "duration",
+            "label": "Duration"
+          },
+          {
+            "key": "status",
+            "label": "Status"
+          }
+        ]
+      }
+    ],
+    "modules": [
+      {
+        "module": "metrics-overview",
+        "slot": "overview",
+        "metricKeys": [
+          "videos_completed",
+          "total_render_seconds",
+          "average_generation_time_ms",
+          "queue_depth",
+          "backend_health"
+        ]
+      },
+      {
+        "module": "permissions-matrix",
+        "slot": "sidebar",
+        "eventKinds": [
+          "job_submitted",
+          "spend_auth_preauthorized",
+          "render_started",
+          "render_completed",
+          "output_ready"
+        ]
+      },
+      {
+        "module": "resource-events",
+        "slot": "resources",
+        "eventKinds": [
+          "video_requested",
+          "job_queued",
+          "job_processing",
+          "video_generated",
+          "webhook_notified"
+        ]
+      }
+    ]
+  }
+}
