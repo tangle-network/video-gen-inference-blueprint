@@ -58,7 +58,7 @@ base64 = "0.22"
 serde_json = { workspace = true }
 
 [dev-dependencies]
-blueprint-sdk = { git = "https://github.com/tangle-network/blueprint", branch = "main", features = ["testing", "tangle"] }
+blueprint-sdk = { version = "0.2.0-alpha.5", features = ["testing", "tangle"] }
 blueprint-anvil-testing-utils = { git = "https://github.com/tangle-network/blueprint", branch = "main" }
 wiremock = "0.6"
 alloy-primitives = "1"
