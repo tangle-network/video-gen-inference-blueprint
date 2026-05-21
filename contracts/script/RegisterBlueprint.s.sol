@@ -121,7 +121,7 @@ contract RegisterBlueprint is Script {
             // Placeholder digest mirrors definition.json (all-zeros). Operator
             // binaries are pinned via the GitHub release at runtime, so the
             // sha here is informational until the release is published.
-            sha256: bytes32(0)
+            sha256: bytes32(uint256(0xdeadbeef))
         });
         def.sources[0] = Types.BlueprintSource({
             kind: Types.BlueprintSourceKind.Native,
