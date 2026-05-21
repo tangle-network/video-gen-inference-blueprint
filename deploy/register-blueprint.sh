@@ -78,12 +78,19 @@ echo ""
 # temp path so the in-tree file stays untouched (its `manager: 0x0…0` is
 # the template).
 PATCHED_DEFINITION=$(mktemp --suffix=-video-gen-blueprint.json)
-trap 'rm -f "$PATCHED_DEFINITION"' EXIT
+# cargo-tangle's `--settings-file` defaults to ./settings.env and errors out
+# when it isn't present, even though every required value is supplied via
+# CLI flags below. Generate an empty placeholder so the loader is happy.
+SETTINGS_FILE=$(mktemp --suffix=-video-gen-blueprint.env)
+trap 'rm -f "$PATCHED_DEFINITION" "$SETTINGS_FILE"' EXIT
 jq --arg mgr "$BSM_ADDRESS" '.manager = $mgr' "$DEFINITION_FILE" > "$PATCHED_DEFINITION"
+printf '# auto-generated empty settings file (values come from CLI flags)\n' \
+    > "$SETTINGS_FILE"
 
 echo "Stage 2: cargo tangle blueprint deploy tangle …"
 cargo tangle blueprint deploy tangle \
     --network testnet \
+    --settings-file "$SETTINGS_FILE" \
     --definition "$PATCHED_DEFINITION" \
     --http-rpc-url "$RPC_URL" \
     --ws-rpc-url "$WS_URL" \
