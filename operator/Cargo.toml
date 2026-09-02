@@ -28,10 +28,10 @@ hex = { workspace = true }
 k256 = { workspace = true }
 
 # Shared inference operator infrastructure (billing, metrics, health, server helpers)
-tangle-inference-core = { git = "https://github.com/tangle-network/tangle-inference-core", branch = "master" }
+tangle-inference-core = { git = "https://github.com/tangle-network/tangle-inference-core", rev = "c7e11063a2ba30c662c64356a73bd81d4a03a267", default-features = false, features = ["billing", "http", "metrics"] }
 
 # Outbound job notifications (webhook callbacks + SSE streaming)
-blueprint-webhooks = { version = "0.2.0-alpha.9", features = ["notifier"] }
+blueprint-webhooks = { git = "https://github.com/tangle-network/blueprint", rev = "54f06f2e8cc697435c862f9e24fcefe45aab3324", package = "blueprint-webhooks", features = ["notifier"] }
 
 # Web framework
 axum = { version = "0.7", features = ["json", "macros"] }
@@ -58,8 +58,8 @@ base64 = "0.22"
 serde_json = { workspace = true }
 
 [dev-dependencies]
-blueprint-sdk = { version = "0.2.0-alpha.9", features = ["testing", "tangle"] }
-blueprint-anvil-testing-utils = { version = "0.2.0-alpha.9" }
+blueprint-sdk = { git = "https://github.com/tangle-network/blueprint", rev = "54f06f2e8cc697435c862f9e24fcefe45aab3324", package = "blueprint-sdk", features = ["testing", "tangle"] }
+blueprint-anvil-testing-utils = { git = "https://github.com/tangle-network/blueprint", rev = "54f06f2e8cc697435c862f9e24fcefe45aab3324", package = "blueprint-anvil-testing-utils" }
 wiremock = "0.6"
 alloy-primitives = "1"
 alloy-sol-types = "1"
