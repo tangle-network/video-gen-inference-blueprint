@@ -4,14 +4,14 @@ pub mod server;
 pub mod video;
 
 // Re-export shared infrastructure so downstream crates can `use video_gen_inference::*`.
-pub use tangle_inference_core::{
-    detect_gpus, parse_nvidia_smi_output, AppState, AppStateBuilder, BillingClient, CostModel,
-    CostParams, GpuInfo, NonceStore, PerSecondCostModel, RequestGuard, SpendAuthPayload,
-};
 pub use tangle_inference_core::server::{
     error_response, extract_x402_spend_auth, payment_required, settle_billing, validate_spend_auth,
 };
 pub use tangle_inference_core::{billing, metrics};
+pub use tangle_inference_core::{
+    detect_gpus, parse_nvidia_smi_output, AppState, AppStateBuilder, BillingClient, CostModel,
+    CostParams, GpuInfo, NonceStore, PerSecondCostModel, RequestGuard, SpendAuthPayload,
+};
 
 use blueprint_sdk::std::sync::{Arc, OnceLock};
 use blueprint_sdk::std::time::Duration;
@@ -224,8 +224,7 @@ impl BackgroundService for VideoGenServer {
         tokio::spawn(async move {
             // 1. Create notifier + video backend
             let notifier = Arc::new(JobNotifier::new(NotifierConfig {
-                signing_secret: std::env::var("WEBHOOK_SIGNING_SECRET")
-                    .unwrap_or_default(),
+                signing_secret: std::env::var("WEBHOOK_SIGNING_SECRET").unwrap_or_default(),
                 ..Default::default()
             }));
 
@@ -269,8 +268,7 @@ impl BackgroundService for VideoGenServer {
             // 4. Build AppState via the shared builder, attaching the video
             //    backend as the generic backend extension.
             let operator_address = billing_client.operator_address();
-            let nonce_store =
-                Arc::new(NonceStore::load(config.billing.nonce_store_path.clone()));
+            let nonce_store = Arc::new(NonceStore::load(config.billing.nonce_store_path.clone()));
             // The backend stores an Arc internally, so we clone the Arc and
             // move the cloned VideoGenBackend into AppStateBuilder. Since
             // VideoGenBackend holds only Arcs, cloning is cheap.

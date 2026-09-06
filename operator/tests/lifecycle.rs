@@ -1,8 +1,11 @@
 //! Full lifecycle test -- video gen submission through real handler + wiremock backend.
 
-use anyhow::{Result, ensure};
-use wiremock::{MockServer, Mock, ResponseTemplate, matchers::{method, path}};
+use anyhow::{ensure, Result};
 use video_gen_inference::VideoGenJobRequest;
+use wiremock::{
+    matchers::{method, path},
+    Mock, MockServer, ResponseTemplate,
+};
 
 #[tokio::test]
 async fn test_submit_video_direct_with_wiremock() -> Result<()> {
