@@ -39,11 +39,7 @@ fn test_config(backend_port: u16) -> OperatorConfig {
             price_per_second: 100_000,
             max_duration_secs: 10,
             default_fps: 24,
-            supported_resolutions: vec![
-                "512x512".into(),
-                "768x768".into(),
-                "1280x720".into(),
-            ],
+            supported_resolutions: vec!["512x512".into(), "768x768".into(), "1280x720".into()],
             default_resolution: "768x768".into(),
             job_timeout_secs: 30,
             comfyui_workflow: None,
@@ -90,7 +86,11 @@ fn test_config(backend_port: u16) -> OperatorConfig {
 
 async fn start_test_server(
     backend_port: u16,
-) -> (u16, tokio::sync::watch::Sender<bool>, tokio::task::JoinHandle<()>) {
+) -> (
+    u16,
+    tokio::sync::watch::Sender<bool>,
+    tokio::task::JoinHandle<()>,
+) {
     let server_port = free_port();
     let mut config = test_config(backend_port);
     config.server.port = server_port;
@@ -131,9 +131,7 @@ async fn test_health_check_healthy() {
 
     Mock::given(method("GET"))
         .and(path("/health"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({"status": "ok"})),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"status": "ok"})))
         .mount(&mock)
         .await;
 

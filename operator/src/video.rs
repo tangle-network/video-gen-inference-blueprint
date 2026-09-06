@@ -96,8 +96,8 @@ pub struct InterpolateRequest {
 
 /// Serde helper for base64-encoded byte fields.
 mod base64_bytes {
+    use base64::{engine::general_purpose::STANDARD, Engine};
     use serde::{Deserialize, Deserializer, Serializer};
-    use base64::{Engine, engine::general_purpose::STANDARD};
 
     pub fn serialize<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
         s.serialize_str(&STANDARD.encode(bytes))
@@ -157,7 +157,13 @@ impl VideoGenBackend {
     }
 
     /// Emit a notification for a job status change.
-    async fn emit_notification(&self, job_id: &str, status: &JobStatus, result: Option<serde_json::Value>, error: Option<&str>) {
+    async fn emit_notification(
+        &self,
+        job_id: &str,
+        status: &JobStatus,
+        result: Option<serde_json::Value>,
+        error: Option<&str>,
+    ) {
         let notifier_status = match status {
             JobStatus::Queued => NotifierJobStatus::Queued,
             JobStatus::Processing => NotifierJobStatus::Processing,
@@ -173,7 +179,11 @@ impl VideoGenBackend {
         };
 
         let webhook_url = self.webhook_urls.get(job_id).map(|r| r.clone());
-        if let Err(e) = self.notifier.notify(job_id, event, webhook_url.as_deref()).await {
+        if let Err(e) = self
+            .notifier
+            .notify(job_id, event, webhook_url.as_deref())
+            .await
+        {
             tracing::warn!(job_id, error = %e, "failed to deliver job notification");
         }
 
@@ -280,9 +290,7 @@ impl VideoGenBackend {
     pub fn active_job_count(&self) -> usize {
         self.jobs
             .iter()
-            .filter(|r| {
-                matches!(r.value().status, JobStatus::Queued | JobStatus::Processing)
-            })
+            .filter(|r| matches!(r.value().status, JobStatus::Queued | JobStatus::Processing))
             .count()
     }
 
@@ -391,7 +399,8 @@ impl VideoGenBackend {
         if let Some(mut job) = self.jobs.get_mut(&job_id) {
             job.status = JobStatus::Processing;
         }
-        self.emit_notification(&job_id, &JobStatus::Processing, None, None).await;
+        self.emit_notification(&job_id, &JobStatus::Processing, None, None)
+            .await;
 
         let start = std::time::Instant::now();
 
@@ -440,10 +449,12 @@ impl VideoGenBackend {
                     &JobStatus::Completed,
                     Some(serde_json::json!({ "output_url": output_url })),
                     None,
-                ).await;
+                )
+                .await;
             }
             Err(e) => {
-                self.emit_notification(&job_id, &JobStatus::Failed, None, Some(&e.to_string())).await;
+                self.emit_notification(&job_id, &JobStatus::Failed, None, Some(&e.to_string()))
+                    .await;
             }
         }
     }
@@ -489,18 +500,13 @@ impl VideoGenBackend {
             if let Some(prompt_data) = history.get(&prompt_id) {
                 if let Some(outputs) = prompt_data.get("outputs") {
                     // Extract the video file path from ComfyUI outputs
-                    for (_node_id, node_output) in outputs
-                        .as_object()
-                        .unwrap_or(&serde_json::Map::new())
+                    for (_node_id, node_output) in
+                        outputs.as_object().unwrap_or(&serde_json::Map::new())
                     {
                         if let Some(videos) = node_output.get("videos") {
                             if let Some(first) = videos.as_array().and_then(|a| a.first()) {
-                                let filename = first["filename"]
-                                    .as_str()
-                                    .unwrap_or("output.mp4");
-                                let subfolder = first["subfolder"]
-                                    .as_str()
-                                    .unwrap_or("");
+                                let filename = first["filename"].as_str().unwrap_or("output.mp4");
+                                let subfolder = first["subfolder"].as_str().unwrap_or("");
                                 let output_url = format!(
                                     "{}/view?filename={}&subfolder={}&type=output",
                                     self.config.video.endpoint, filename, subfolder
@@ -517,7 +523,8 @@ impl VideoGenBackend {
                         if let Some(arr) = messages.as_array() {
                             for msg in arr {
                                 if msg[0].as_str() == Some("execution_error") {
-                                    let err = msg.get(1)
+                                    let err = msg
+                                        .get(1)
                                         .and_then(|v| v.get("exception_message"))
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("unknown error");
@@ -534,16 +541,16 @@ impl VideoGenBackend {
     /// Execute via remote API (Modal, Replicate, or compatible).
     /// Expects the endpoint to support: POST / -> {id}, GET /{id} -> {status, output}
     async fn execute_api(&self, req: &VideoGenRequest) -> anyhow::Result<String> {
-        let mut submit_req = self
-            .client
-            .post(&self.config.video.endpoint)
-            .json(&serde_json::json!({
-                "prompt": req.prompt,
-                "duration_secs": req.duration_secs,
-                "resolution": req.resolution,
-                "fps": req.fps,
-                "model": self.config.video.model,
-            }));
+        let mut submit_req =
+            self.client
+                .post(&self.config.video.endpoint)
+                .json(&serde_json::json!({
+                    "prompt": req.prompt,
+                    "duration_secs": req.duration_secs,
+                    "resolution": req.resolution,
+                    "fps": req.fps,
+                    "model": self.config.video.model,
+                }));
 
         if let Some(ref api_key) = self.config.video.api_key {
             submit_req = submit_req.bearer_auth(api_key);
@@ -579,9 +586,7 @@ impl VideoGenBackend {
             let resp = poll_req.send().await?.error_for_status()?;
             let body: serde_json::Value = resp.json().await?;
 
-            let status = body["status"]
-                .as_str()
-                .unwrap_or("unknown");
+            let status = body["status"].as_str().unwrap_or("unknown");
 
             match status {
                 "succeeded" | "completed" => {
@@ -599,9 +604,7 @@ impl VideoGenBackend {
                     return Ok(output_url);
                 }
                 "failed" | "error" => {
-                    let error_msg = body["error"]
-                        .as_str()
-                        .unwrap_or("unknown error");
+                    let error_msg = body["error"].as_str().unwrap_or("unknown error");
                     anyhow::bail!("API job failed: {error_msg}");
                 }
                 _ => continue, // still processing
@@ -658,7 +661,8 @@ impl VideoGenBackend {
                 "params": req.params,
                 "model": self.config.video.model,
             })
-        }).await;
+        })
+        .await;
     }
 
     /// Execute a video upscale job against the configured backend.
@@ -670,7 +674,8 @@ impl VideoGenBackend {
                 "target_resolution": req.target_resolution,
                 "model": self.config.video.model,
             })
-        }).await;
+        })
+        .await;
     }
 
     /// Execute a frame-interpolation job against the configured backend.
@@ -682,7 +687,8 @@ impl VideoGenBackend {
                 "target_fps": req.target_fps,
                 "model": self.config.video.model,
             })
-        }).await;
+        })
+        .await;
     }
 
     /// Generic job execution: mark processing, POST to backend, poll for result, update job store.
@@ -693,7 +699,8 @@ impl VideoGenBackend {
         if let Some(mut job) = self.jobs.get_mut(&job_id) {
             job.status = JobStatus::Processing;
         }
-        self.emit_notification(&job_id, &JobStatus::Processing, None, None).await;
+        self.emit_notification(&job_id, &JobStatus::Processing, None, None)
+            .await;
 
         let start = std::time::Instant::now();
         let payload = build_payload();
@@ -790,10 +797,12 @@ impl VideoGenBackend {
                     &JobStatus::Completed,
                     Some(serde_json::json!({ "output_url": output_url })),
                     None,
-                ).await;
+                )
+                .await;
             }
             Err(e) => {
-                self.emit_notification(&job_id, &JobStatus::Failed, None, Some(&e.to_string())).await;
+                self.emit_notification(&job_id, &JobStatus::Failed, None, Some(&e.to_string()))
+                    .await;
             }
         }
     }

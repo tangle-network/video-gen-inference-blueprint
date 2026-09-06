@@ -29,9 +29,9 @@ use axum::{
 };
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use tokio_stream::StreamExt;
-use tokio_stream::wrappers::BroadcastStream;
 use tokio::task::JoinHandle;
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::StreamExt;
 use tower_http::cors::CorsLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
@@ -227,7 +227,12 @@ async fn submit_video_job(
         .resolution
         .clone()
         .unwrap_or_else(|| backend.config.video.default_resolution.clone());
-    if !backend.config.video.supported_resolutions.contains(&resolution) {
+    if !backend
+        .config
+        .video
+        .supported_resolutions
+        .contains(&resolution)
+    {
         return error_response(
             StatusCode::BAD_REQUEST,
             format!(
@@ -550,15 +555,16 @@ async fn sse_job_events(
     Path(job_id): Path<String>,
 ) -> impl IntoResponse {
     let backend = backend_from(&state);
-    let rx = backend.notifier.subscribe(&job_id).await
+    let rx = backend
+        .notifier
+        .subscribe(&job_id)
+        .await
         .expect("notifier must have active sender for job");
     let stream = BroadcastStream::new(rx).filter_map(|result| match result {
         Ok(event) => {
             let data = serde_json::to_string(&event)
                 .unwrap_or_else(|_| r#"{"error":"serialize"}"#.to_string());
-            let sse_event = Event::default()
-                .event(event.status.to_string())
-                .data(data);
+            let sse_event = Event::default().event(event.status.to_string()).data(data);
             Some(Ok::<_, std::convert::Infallible>(sse_event))
         }
         Err(_) => None,
