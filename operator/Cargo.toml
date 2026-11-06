@@ -29,7 +29,7 @@ hex = { workspace = true }
 k256 = { workspace = true }
 
 # Shared inference operator infrastructure (billing, metrics, health, server helpers)
-tangle-inference-core = { git = "https://github.com/tangle-network/tangle-inference-core", rev = "d23953eb7e04484a6830f0caeee0e89394760ea5", default-features = false, features = ["billing", "http", "metrics"] }
+tangle-inference-core = { git = "https://github.com/tangle-network/tangle-inference-core", rev = "55fa3b0d55bcf1544a0c6fc3f6487e0557dfc906", default-features = false, features = ["billing", "http", "metrics"] }
 
 # Outbound job notifications (webhook callbacks + SSE streaming)
 blueprint-webhooks = { git = "https://github.com/tangle-network/blueprint", rev = "54f06f2e8cc697435c862f9e24fcefe45aab3324", package = "blueprint-webhooks", features = ["notifier"] }
