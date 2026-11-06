@@ -6,7 +6,7 @@ import {VideoGenBSM} from "../src/VideoGenBSM.sol";
 
 contract Deploy is RegisterBlueprint {
     function _deployManager() internal override returns (address) {
-        return address(new VideoGenBSM());
+        return address(new VideoGenBSM(vm.envAddress("TANGLE_CORE")));
     }
 
     function _report(address manager, uint64 blueprintId) internal override {

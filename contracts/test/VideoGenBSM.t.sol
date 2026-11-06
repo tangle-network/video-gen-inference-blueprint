@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-import { Test } from "forge-std/Test.sol";
-import { VideoGenBSM } from "../src/VideoGenBSM.sol";
-import { BlueprintServiceManagerBase } from "tnt-core/BlueprintServiceManagerBase.sol";
+import {Test} from "forge-std/Test.sol";
+import {VideoGenBSM} from "../src/VideoGenBSM.sol";
+import {BlueprintServiceManagerBase} from "tnt-core/BlueprintServiceManagerBase.sol";
 
 contract VideoGenBSMTest is Test {
     VideoGenBSM public bsm;
@@ -15,15 +15,16 @@ contract VideoGenBSMTest is Test {
     address public user = address(0x3333);
 
     function setUp() public {
-        bsm = new VideoGenBSM();
+        bsm = new VideoGenBSM(tangleCore);
+        vm.prank(tangleCore);
         bsm.onBlueprintCreated(1, owner, tangleCore);
 
         vm.prank(owner);
         bsm.configureModel(
             "hunyuan-video",
             uint64(100_000), // price per second (0.10 USD)
-            uint32(48_000),  // min VRAM
-            uint32(30)       // max 30 seconds
+            uint32(48_000), // min VRAM
+            uint32(30) // max 30 seconds
         );
     }
 
@@ -37,14 +38,14 @@ contract VideoGenBSMTest is Test {
 
     function test_cannotReinitialize() public {
         vm.expectRevert(BlueprintServiceManagerBase.AlreadyInitialized.selector);
+        vm.prank(tangleCore);
         bsm.onBlueprintCreated(2, owner, tangleCore);
     }
 
     // --- Model Configuration ---
 
     function test_configureModel() public view {
-        (uint64 price, uint32 minVram, uint32 maxDur, bool enabled) =
-            bsm.modelConfigs(keccak256("hunyuan-video"));
+        (uint64 price, uint32 minVram, uint32 maxDur, bool enabled) = bsm.modelConfigs(keccak256("hunyuan-video"));
         assertEq(price, 100_000);
         assertEq(minVram, 48_000);
         assertEq(maxDur, 30);
