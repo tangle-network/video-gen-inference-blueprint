@@ -64,6 +64,8 @@ fn test_config(backend_port: u16) -> OperatorConfig {
             max_per_account_requests: 0,
         },
         billing: BillingConfig {
+            payment_rails: tangle_inference_core::PaymentRails::NONE,
+            direct_replay_store_path: None,
             billing_required: false,
             max_spend_per_request: 10_000_000,
             min_credit_balance: 1000,
