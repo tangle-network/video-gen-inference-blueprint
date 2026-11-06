@@ -1,5 +1,5 @@
 pub mod config;
-pub mod qos;
+pub use tangle_inference_core::qos;
 pub mod server;
 pub mod video;
 

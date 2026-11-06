@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 pub use tangle_inference_core::{BillingConfig, GpuConfig, ServerConfig, TangleConfig};
 
-use crate::qos::QoSConfig;
+use tangle_inference_core::qos::QoSConfig;
 
 /// Top-level operator configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,6 +166,7 @@ impl OperatorConfig {
 
         builder = builder.add_source(
             config::Environment::with_prefix("VIDGEN_OP")
+                .prefix_separator("_")
                 .separator("__")
                 .try_parsing(true),
         );
