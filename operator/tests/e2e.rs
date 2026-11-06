@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use blueprint_webhooks::notifier::{JobNotifier, NotifierConfig};
+
 use wiremock::{
     matchers::{method, path},
     Mock, MockServer, ResponseTemplate,
@@ -36,7 +38,7 @@ fn test_config(backend_port: u16) -> OperatorConfig {
             endpoint: format!("http://127.0.0.1:{backend_port}"),
             api_key: None,
             model: "test-video-model".into(),
-            price_per_second: 100_000,
+            price_per_compute_second: 100_000,
             max_duration_secs: 10,
             default_fps: 24,
             supported_resolutions: vec!["512x512".into(), "768x768".into(), "1280x720".into()],
@@ -54,6 +56,7 @@ fn test_config(backend_port: u16) -> OperatorConfig {
             max_input_size_bytes: 64 * 1024 * 1024,
         },
         server: ServerConfig {
+            endpoint_key: None,
             host: "127.0.0.1".into(),
             port: 0,
             max_concurrent_requests: 4,
@@ -98,7 +101,8 @@ async fn start_test_server(
     config.server.port = server_port;
     let config = Arc::new(config);
 
-    let backend = VideoGenBackend::new(config.clone()).unwrap();
+    let notifier = Arc::new(JobNotifier::new(NotifierConfig::default()));
+    let backend = VideoGenBackend::new(config.clone(), notifier).unwrap();
     let billing_client = Arc::new(
         BillingClient::new(&config.tangle, &config.billing)
             .expect("billing client construction should succeed with test config"),
