@@ -65,3 +65,7 @@ VIDEO_ENDPOINT=https://api.replicate.com VIDEO_MODE=api cargo run --release
 - [Voice Inference Blueprint](https://github.com/tangle-network/voice-inference-blueprint) — TTS/STT
 - [Image Generation Blueprint](https://github.com/tangle-network/image-gen-inference-blueprint) — image generation
 - [Embedding Blueprint](https://github.com/tangle-network/embedding-inference-blueprint) — text embeddings
+
+## Release definitions
+
+`deploy/register-blueprint.sh` reads the prepared definition from this repository's latest GitHub Release. The release workflow packages the actual binary digest, SDK download manifest, and execution profile together. Set `BLUEPRINT_DEFINITION` to a prepared definition for a specific release. For a local Anvil proof only, set `BLUEPRINT_BINARY` to the built operator binary; registration hashes that file and requires a loopback RPC on chain 31337.

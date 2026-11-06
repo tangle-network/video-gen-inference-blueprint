@@ -1,37 +1,6 @@
 #!/usr/bin/env bash
 # Register the video-gen-inference blueprint on Tangle.
-#
-# Single-shot flow: deploys VideoGenBSM (regular, non-upgradeable) AND calls
-# Tangle.createBlueprint in the same broadcast via
-# `contracts/script/Deploy.s.sol`.
-#
-# Replaces the prior cargo-tangle CLI flow — `cargo tangle blueprint deploy
-# tangle` repeatedly failed against the deployed Base Sepolia Tangle proxy due
-# to cargo-tangle's settings-file + enum-case requirements. The forge-script
-# pattern below is the same one proven by sibling blueprints (image-gen, llm
-# inference, ai-agent-sandbox, etc.).
-#
-# Prerequisites:
-#   - forge (Foundry) installed
-#   - Deployer wallet funded on the target network
-#
-# Usage (Base Sepolia, against the already-deployed Tangle protocol):
-#
-#   export PRIVATE_KEY=0x...
-#   export RPC_URL=https://sepolia.base.org
-#   export TANGLE_CORE=0xC9b0716a187072be0f38A5D972392C6479b9Cfe3
-#   export PAYMENT_TOKEN=0x036CbD53842c5426634e7929541eC2318f3dCF7e  # USDC sepolia
-#   ./deploy/register-blueprint.sh
-#
-# Local anvil (LocalTestnet snapshot):
-#
-#   export RPC_URL=http://127.0.0.1:8545
-#   ./deploy/register-blueprint.sh   # uses anvil deployer key + Tangle/USDC defaults
-#
-# Outputs (parsed by downstream tooling, do not change without coordinating):
-#   DEPLOY_VIDEO_GEN_BSM=<address>
-#   DEPLOY_VIDEO_GEN_BLUEPRINT_ID=<u64>
-#   DEPLOY_VIDEO_GEN_PAYMENT_TOKEN=<address>
+# Release definitions and local Anvil inputs are documented in README.md.
 
 set -euo pipefail
 
@@ -41,12 +10,15 @@ TANGLE_CORE="${TANGLE_CORE:-0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9}"
 
 echo "=== Video-Gen Inference Blueprint Registration ==="
 echo "Network:     $(cast chain-id --rpc-url "$RPC_URL")"
-echo "Tangle Core: ${TANGLE_CORE:-<default from RegisterBlueprint.s.sol>}"
+echo "Tangle Core: $TANGLE_CORE"
 echo "Payment:     ${PAYMENT_TOKEN:-<default USDC sepolia>}"
 echo ""
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CORE_DIR="$(cargo metadata --manifest-path "$ROOT_DIR/Cargo.toml" --format-version 1 --locked | python3 -c 'import json,sys,pathlib; print(pathlib.Path(next(p["manifest_path"] for p in json.load(sys.stdin)["packages"] if p["name"] == "tangle-inference-core")).parent)')"
+BLUEPRINT_DEFINITION="$(node "$CORE_DIR/scripts/register-blueprint.mjs" "$ROOT_DIR/deploy/definition.json" "$ROOT_DIR")"
+export BLUEPRINT_DEFINITION
+trap 'rm -f -- "$BLUEPRINT_DEFINITION"' EXIT
 cd "$(dirname "$0")/../contracts"
 
 # Deploy BSM AND register the blueprint in one forge-script broadcast.
