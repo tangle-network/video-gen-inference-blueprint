@@ -2,6 +2,10 @@
 members = ["operator"]
 resolver = "2"
 
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
@@ -17,7 +21,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 anyhow = "1"
 thiserror = "2"
 hex = "0.4"
@@ -25,8 +29,3 @@ k256 = { version = "0.13", features = ["ecdsa"] }
 prometheus = { version = "0.13", default-features = false }
 futures-util = "0.3"
 tokio-stream = "0.1"
-
-# Point blueprint-sdk deps at local checkout (has pre-yank core2 resolved)
-# core2 was entirely yanked from crates.io
-[patch.crates-io]
-core2 = { git = "https://github.com/tangle-network/core2", branch = "master" }

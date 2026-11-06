@@ -1,5 +1,5 @@
 pub mod config;
-pub mod qos;
+pub use tangle_inference_core::qos;
 pub mod server;
 pub mod video;
 
@@ -151,9 +151,9 @@ pub fn router() -> Router {
 #[debug_job]
 pub async fn run_video_gen(
     TangleArg(request): TangleArg<VideoGenJobRequest>,
-) -> Result<TangleResult<VideoGenJobResult>, RunnerError> {
+) -> anyhow::Result<TangleResult<VideoGenJobResult>> {
     let backend = VIDEO_BACKEND.get().ok_or_else(|| {
-        RunnerError::Other("video backend not registered — VideoGenServer not started".into())
+        anyhow::anyhow!("video backend not registered — VideoGenServer not started")
     })?;
 
     let fps = if request.fps == 0 {
@@ -171,7 +171,7 @@ pub async fn run_video_gen(
 
     let job_id = backend.submit_job(gen_req).await.map_err(|e| {
         tracing::error!(error = %e, "video gen job submission failed");
-        RunnerError::Other(format!("video gen submission failed: {e}").into())
+        anyhow::anyhow!("video gen submission failed: {e}")
     })?;
 
     let timeout = Duration::from_secs(backend.config.video.job_timeout_secs);
@@ -179,9 +179,7 @@ pub async fn run_video_gen(
 
     loop {
         if start.elapsed() > timeout {
-            return Err(RunnerError::Other(
-                format!("video gen job {job_id} timed out").into(),
-            ));
+            return Err(anyhow::anyhow!(format!("video gen job {job_id} timed out"),));
         }
 
         tokio::time::sleep(Duration::from_secs(3)).await;
@@ -198,9 +196,7 @@ pub async fn run_video_gen(
                 }
                 JobStatus::Failed => {
                     let err = job.error.unwrap_or_else(|| "unknown error".to_string());
-                    return Err(RunnerError::Other(
-                        format!("video gen failed: {err}").into(),
-                    ));
+                    return Err(anyhow::anyhow!(format!("video gen failed: {err}"),));
                 }
                 _ => continue,
             }

@@ -3,6 +3,7 @@ name = "video-gen-inference"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [lib]
 name = "video_gen_inference"
@@ -28,7 +29,7 @@ hex = { workspace = true }
 k256 = { workspace = true }
 
 # Shared inference operator infrastructure (billing, metrics, health, server helpers)
-tangle-inference-core = { git = "https://github.com/tangle-network/tangle-inference-core", rev = "c7e11063a2ba30c662c64356a73bd81d4a03a267", default-features = false, features = ["billing", "http", "metrics"] }
+tangle-inference-core = { git = "https://github.com/tangle-network/tangle-inference-core", rev = "55fa3b0d55bcf1544a0c6fc3f6487e0557dfc906", default-features = false, features = ["billing", "http", "metrics"] }
 
 # Outbound job notifications (webhook callbacks + SSE streaming)
 blueprint-webhooks = { git = "https://github.com/tangle-network/blueprint", rev = "54f06f2e8cc697435c862f9e24fcefe45aab3324", package = "blueprint-webhooks", features = ["notifier"] }

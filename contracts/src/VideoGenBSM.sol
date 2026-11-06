@@ -21,6 +21,8 @@ pragma solidity ^0.8.26;
 import { BlueprintServiceManagerBase } from "tnt-core/BlueprintServiceManagerBase.sol";
 
 contract VideoGenBSM is BlueprintServiceManagerBase {
+    constructor(address registry) { _initializeBlueprintManager(registry, msg.sender); }
+
 
     // ═══════════════════════════════════════════════════════════════════════
     // TYPES
