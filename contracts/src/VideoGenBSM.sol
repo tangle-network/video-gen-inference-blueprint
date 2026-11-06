@@ -18,10 +18,10 @@ pragma solidity ^0.8.26;
 ///      - CogVideoX: 40GB+
 ///      The contract enforces minimum VRAM thresholds per model class.
 
-import { InferenceBSMBase } from "tangle-inference-core/InferenceBSMBase.sol";
+import { BlueprintServiceManagerBase } from "tnt-core/BlueprintServiceManagerBase.sol";
 
-contract VideoGenBSM is InferenceBSMBase {
-    constructor(address registry) { _bindRegistrationCore(registry); }
+contract VideoGenBSM is BlueprintServiceManagerBase {
+    constructor(address registry) { _initializeBlueprintManager(registry, msg.sender); }
 
 
     // ═══════════════════════════════════════════════════════════════════════
