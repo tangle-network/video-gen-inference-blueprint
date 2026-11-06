@@ -29,7 +29,7 @@ fn registration_payload(config: &OperatorConfig) -> Vec<u8> {
 tangle_inference_core::run_operator!(
     OperatorConfig::load(None),
     registration_payload,
-    video_gen_inference::router(),
+    |_| video_gen_inference::router(),
     |config| VideoGenServer { config },
     qos
 );
