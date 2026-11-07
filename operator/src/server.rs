@@ -74,7 +74,7 @@ pub async fn start(
         .layer(TimeoutLayer::new(Duration::from_secs(stream_timeout)))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
-        .with_state(state);
+        .with_state(state.clone());
 
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!(bind = %bind, "HTTP server listening");
@@ -90,6 +90,8 @@ pub async fn start(
         {
             tracing::error!(error = %e, "HTTP server error");
         }
+        // Jobs interrupted by shutdown never finish and are never charged, so the wait is bounded.
+        let _ = tokio::time::timeout(Duration::from_secs(60), state.drain_settlements()).await;
     });
 
     Ok(handle)
@@ -185,7 +187,8 @@ fn settle_when_done(
     let (Some(spend_auth), Some(preauth)) = payment else {
         return;
     };
-    tokio::spawn(async move {
+    let tracker = state.clone();
+    tracker.spawn_settlement(async move {
         loop {
             let Some(job) = backend_from(&state).get_job(&job_id) else {
                 return;
