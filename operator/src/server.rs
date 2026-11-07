@@ -12,8 +12,7 @@
 //!      duration (the client paid for the video they asked for).
 //!   3. Operator returns a `job_id`; client polls `/v1/video/:job_id` for
 //!      completion. Payment is claimed once the job finishes successfully.
-//!   4. On failure, no payment is claimed (operator eats the gas of the
-//!      upfront `authorizeSpend`).
+//!   4. On failure the authorization is dropped, which releases the credit.
 
 use blueprint_sdk::std::time::Duration;
 
@@ -29,6 +28,7 @@ use axum::{
 };
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
+use tokio::sync::OwnedSemaphorePermit;
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
@@ -37,8 +37,8 @@ use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use tangle_inference_core::server::{
-    acquire_permit, billing_gate, error_response, gpu_health_handler, metrics_handler,
-    settle_billing,
+    acquire_permit, authorize_request, error_response, gpu_health_handler, metrics_handler,
+    payment_required, resolve_payment_proof, settle_request, AuthorizedPayment,
 };
 use tangle_inference_core::{detect_gpus, AppState, SpendAuthPayload};
 
@@ -178,13 +178,33 @@ fn default_duration() -> u32 {
 
 // --- Helpers ---
 
-/// Claims a job's actual compute cost once it completes; a failed or missing job is never charged.
-fn settle_when_done(
-    state: AppState,
-    job_id: String,
-    payment: (Option<SpendAuthPayload>, Option<u64>),
-) {
-    let (Some(spend_auth), Some(preauth)) = payment else {
+/// Admits a request under the concurrency limit and authorizes its payment; the payment is None
+/// when billing is optional and the caller sent no proof.
+#[allow(clippy::result_large_err)]
+async fn admit(
+    state: &AppState,
+    headers: &HeaderMap,
+    spend_auth: Option<SpendAuthPayload>,
+    cost: u64,
+) -> Result<(OwnedSemaphorePermit, Option<AuthorizedPayment>), Response> {
+    let permit = acquire_permit(state)?;
+    let Some(proof) = resolve_payment_proof(headers, spend_auth, None) else {
+        let b = &state.billing_config;
+        let floor = cost.max(b.min_charge_amount);
+        let refuse = || payment_required(b, &state.tangle_config, state.operator_address, floor);
+        return (!b.billing_required)
+            .then_some((permit, None))
+            .ok_or_else(refuse);
+    };
+    let healthy = backend_from(state).is_healthy();
+    let payment = authorize_request(state, proof, cost, healthy).await?;
+    Ok((permit, Some(payment)))
+}
+
+/// Settles a job's actual compute cost once it completes; a failed or missing job drops the
+/// authorization, which releases the credit.
+fn settle_when_done(state: AppState, job_id: String, payment: Option<AuthorizedPayment>) {
+    let Some(payment) = payment else {
         return;
     };
     let tracker = state.clone();
@@ -197,11 +217,7 @@ fn settle_when_done(
                 JobStatus::Completed => {
                     let secs = job.generation_time_ms.unwrap_or(0).div_ceil(1000);
                     let cost = backend_from(&state).calculate_cost(secs);
-                    if let Err(error) =
-                        settle_billing(&state.billing, &spend_auth, preauth, Some(cost)).await
-                    {
-                        tracing::error!(%error, job_id, "video settlement failed");
-                    }
+                    settle_request(&state, &payment, Some(cost)).await;
                     return;
                 }
                 JobStatus::Failed => return,
@@ -282,17 +298,11 @@ async fn submit_video_job(
 
     let fps = req.fps.unwrap_or(backend.config.video.default_fps);
 
-    // Concurrency gate
-    let _permit = match acquire_permit(&state) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
-
     // Billing gate — upfront authorize based on estimated GPU compute time
     let estimated_compute_secs = backend.estimate_compute_secs(req.duration_secs);
     let estimated_cost = backend.calculate_cost(estimated_compute_secs);
-    let payment = match billing_gate(&state, &headers, req.spend_auth, estimated_cost).await {
-        Ok(payment) => payment,
+    let (_permit, payment) = match admit(&state, &headers, req.spend_auth, estimated_cost).await {
+        Ok(admitted) => admitted,
         Err(resp) => return resp,
     };
 
@@ -392,15 +402,10 @@ async fn submit_img2vid_job(
         );
     }
 
-    let _permit = match acquire_permit(&state) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
-
     let estimated_compute_secs = backend.estimate_compute_secs(req.duration_secs);
     let estimated_cost = backend.calculate_cost(estimated_compute_secs);
-    let payment = match billing_gate(&state, &headers, req.spend_auth, estimated_cost).await {
-        Ok(payment) => payment,
+    let (_permit, payment) = match admit(&state, &headers, req.spend_auth, estimated_cost).await {
+        Ok(admitted) => admitted,
         Err(resp) => return resp,
     };
 
@@ -474,16 +479,11 @@ async fn submit_upscale_job(
         );
     }
 
-    let _permit = match acquire_permit(&state) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
-
     // Upscaling has no output duration, so it is priced like the longest allowed generation.
     let estimated_cost = backend
         .calculate_cost(backend.estimate_compute_secs(backend.config.video.max_duration_secs));
-    let payment = match billing_gate(&state, &headers, req.spend_auth, estimated_cost).await {
-        Ok(payment) => payment,
+    let (_permit, payment) = match admit(&state, &headers, req.spend_auth, estimated_cost).await {
+        Ok(admitted) => admitted,
         Err(resp) => return resp,
     };
 
@@ -555,16 +555,11 @@ async fn submit_interpolate_job(
         );
     }
 
-    let _permit = match acquire_permit(&state) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
-
     // Upscaling has no output duration, so it is priced like the longest allowed generation.
     let estimated_cost = backend
         .calculate_cost(backend.estimate_compute_secs(backend.config.video.max_duration_secs));
-    let payment = match billing_gate(&state, &headers, req.spend_auth, estimated_cost).await {
-        Ok(payment) => payment,
+    let (_permit, payment) = match admit(&state, &headers, req.spend_auth, estimated_cost).await {
+        Ok(admitted) => admitted,
         Err(resp) => return resp,
     };
 
