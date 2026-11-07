@@ -1,2 +1,4 @@
 target/
 contracts/dependencies/tnt-core-*/
+contracts/out/
+contracts/cache/
