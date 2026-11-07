@@ -38,11 +38,12 @@ use tower_http::trace::TraceLayer;
 
 use tangle_inference_core::server::{
     acquire_permit, billing_gate, error_response, gpu_health_handler, metrics_handler,
+    settle_billing,
 };
 use tangle_inference_core::{detect_gpus, AppState, SpendAuthPayload};
 
 use crate::video::{
-    Img2VidRequest, InterpolateRequest, UpscaleRequest, VideoGenBackend, VideoGenRequest,
+    Img2VidRequest, InterpolateRequest, JobStatus, UpscaleRequest, VideoGenBackend, VideoGenRequest,
 };
 
 /// Start the HTTP server with graceful shutdown support.
@@ -175,6 +176,38 @@ fn default_duration() -> u32 {
 
 // --- Helpers ---
 
+/// Claims a job's actual compute cost once it completes; a failed or missing job is never charged.
+fn settle_when_done(
+    state: AppState,
+    job_id: String,
+    payment: (Option<SpendAuthPayload>, Option<u64>),
+) {
+    let (Some(spend_auth), Some(preauth)) = payment else {
+        return;
+    };
+    tokio::spawn(async move {
+        loop {
+            let Some(job) = backend_from(&state).get_job(&job_id) else {
+                return;
+            };
+            match job.status {
+                JobStatus::Completed => {
+                    let secs = job.generation_time_ms.unwrap_or(0).div_ceil(1000);
+                    let cost = backend_from(&state).calculate_cost(secs);
+                    if let Err(error) =
+                        settle_billing(&state.billing, &spend_auth, preauth, Some(cost)).await
+                    {
+                        tracing::error!(%error, job_id, "video settlement failed");
+                    }
+                    return;
+                }
+                JobStatus::Failed => return,
+                _ => tokio::time::sleep(Duration::from_secs(2)).await,
+            }
+        }
+    });
+}
+
 fn backend_from(state: &AppState) -> &VideoGenBackend {
     state
         .backend::<VideoGenBackend>()
@@ -255,9 +288,10 @@ async fn submit_video_job(
     // Billing gate — upfront authorize based on estimated GPU compute time
     let estimated_compute_secs = backend.estimate_compute_secs(req.duration_secs);
     let estimated_cost = backend.calculate_cost(estimated_compute_secs);
-    if let Err(resp) = billing_gate(&state, &headers, req.spend_auth, estimated_cost).await {
-        return resp;
-    }
+    let payment = match billing_gate(&state, &headers, req.spend_auth, estimated_cost).await {
+        Ok(payment) => payment,
+        Err(resp) => return resp,
+    };
 
     // Submit the job
     let gen_req = VideoGenRequest {
@@ -269,6 +303,7 @@ async fn submit_video_job(
 
     match backend.submit_job(gen_req).await {
         Ok(job_id) => {
+            settle_when_done(state.clone(), job_id.clone(), payment);
             if let Some(ref url) = req.webhook_url {
                 backend.set_webhook_url(&job_id, url.clone());
             }
@@ -361,9 +396,10 @@ async fn submit_img2vid_job(
 
     let estimated_compute_secs = backend.estimate_compute_secs(req.duration_secs);
     let estimated_cost = backend.calculate_cost(estimated_compute_secs);
-    if let Err(resp) = billing_gate(&state, &headers, req.spend_auth, estimated_cost).await {
-        return resp;
-    }
+    let payment = match billing_gate(&state, &headers, req.spend_auth, estimated_cost).await {
+        Ok(payment) => payment,
+        Err(resp) => return resp,
+    };
 
     let gen_req = Img2VidRequest {
         image_bytes,
@@ -374,6 +410,7 @@ async fn submit_img2vid_job(
 
     match backend.img2vid(gen_req).await {
         Ok(job_id) => {
+            settle_when_done(state.clone(), job_id.clone(), payment);
             if let Some(ref url) = req.webhook_url {
                 backend.set_webhook_url(&job_id, url.clone());
             }
@@ -439,10 +476,13 @@ async fn submit_upscale_job(
         Err(resp) => return resp,
     };
 
-    let spend_auth = req.spend_auth;
-    if let Err(resp) = billing_gate(&state, &headers, spend_auth, 0).await {
-        return resp;
-    }
+    // Upscaling has no output duration, so it is priced like the longest allowed generation.
+    let estimated_cost = backend
+        .calculate_cost(backend.estimate_compute_secs(backend.config.video.max_duration_secs));
+    let payment = match billing_gate(&state, &headers, req.spend_auth, estimated_cost).await {
+        Ok(payment) => payment,
+        Err(resp) => return resp,
+    };
 
     let upscale_req = UpscaleRequest {
         video_url: req.video_url,
@@ -451,6 +491,7 @@ async fn submit_upscale_job(
 
     match backend.upscale(upscale_req).await {
         Ok(job_id) => {
+            settle_when_done(state.clone(), job_id.clone(), payment);
             if let Some(ref url) = req.webhook_url {
                 backend.set_webhook_url(&job_id, url.clone());
             }
@@ -516,10 +557,13 @@ async fn submit_interpolate_job(
         Err(resp) => return resp,
     };
 
-    let spend_auth = req.spend_auth;
-    if let Err(resp) = billing_gate(&state, &headers, spend_auth, 0).await {
-        return resp;
-    }
+    // Upscaling has no output duration, so it is priced like the longest allowed generation.
+    let estimated_cost = backend
+        .calculate_cost(backend.estimate_compute_secs(backend.config.video.max_duration_secs));
+    let payment = match billing_gate(&state, &headers, req.spend_auth, estimated_cost).await {
+        Ok(payment) => payment,
+        Err(resp) => return resp,
+    };
 
     let interp_req = InterpolateRequest {
         video_url: req.video_url,
@@ -528,6 +572,7 @@ async fn submit_interpolate_job(
 
     match backend.interpolate(interp_req).await {
         Ok(job_id) => {
+            settle_when_done(state.clone(), job_id.clone(), payment);
             if let Some(ref url) = req.webhook_url {
                 backend.set_webhook_url(&job_id, url.clone());
             }
