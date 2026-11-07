@@ -23,11 +23,6 @@ import { BlueprintServiceManagerBase } from "tnt-core/BlueprintServiceManagerBas
 contract VideoGenBSM is BlueprintServiceManagerBase {
     constructor(address registry) { _initializeBlueprintManager(registry, msg.sender); }
 
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // TYPES
-    // ═══════════════════════════════════════════════════════════════════════
-
     struct OperatorCapabilities {
         /// Video model identifier (e.g. "hunyuan-video", "ltx-video")
         string model;
@@ -58,10 +53,6 @@ contract VideoGenBSM is BlueprintServiceManagerBase {
         bool enabled;
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // STATE
-    // ═══════════════════════════════════════════════════════════════════════
-
     /// operator address => capabilities
     mapping(address => OperatorCapabilities) public operatorCaps;
 
@@ -70,10 +61,6 @@ contract VideoGenBSM is BlueprintServiceManagerBase {
 
     /// Registered operator addresses for enumeration
     address[] internal _operators;
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // EVENTS
-    // ═══════════════════════════════════════════════════════════════════════
 
     event OperatorRegistered(
         address indexed operator,
@@ -89,10 +76,6 @@ contract VideoGenBSM is BlueprintServiceManagerBase {
         uint32 minGpuVramMib,
         uint32 maxDurationSecs
     );
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // ADMIN
-    // ═══════════════════════════════════════════════════════════════════════
 
     /// @notice Configure a supported video model class with pricing and VRAM requirements.
     /// @param model Model identifier (e.g. "hunyuan-video")
@@ -114,10 +97,6 @@ contract VideoGenBSM is BlueprintServiceManagerBase {
 
         emit ModelConfigured(model, pricePerSecond, minGpuVramMib, maxDuration);
     }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // REGISTRATION (BSM lifecycle)
-    // ═══════════════════════════════════════════════════════════════════════
 
     /// @notice Called when an operator registers for this blueprint.
     /// @dev Validates GPU capabilities meet minimum requirements for the declared model.
@@ -190,10 +169,6 @@ contract VideoGenBSM is BlueprintServiceManagerBase {
         (string memory newEndpoint) = abi.decode(preferences, (string));
         operatorCaps[operator].endpoint = newEndpoint;
     }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // QUERIES
-    // ═══════════════════════════════════════════════════════════════════════
 
     /// @notice Get all registered operator addresses
     function getOperators() external view returns (address[] memory) {
